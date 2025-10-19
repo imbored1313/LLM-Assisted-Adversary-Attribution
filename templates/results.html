@@ -194,6 +194,74 @@
     </style>
   {% endif %}
 </head>
+{% macro group_table(rows, mode) -%}
+  {% set has_rows = rows is iterable and (rows|length > 0) %}
+  {% if not has_rows %}
+    <p>No matches found.</p>
+  {% else %}
+    {% set display = {
+      "group_id": "Group ID",
+      "group_name": "Group Name",
+      "group_score": "Match Score",
+      "rank": "Rank",
+      "origin": "Origin",
+      "matched_exact": "Matched (Exact)",
+      "matched_root_only": "Matched (Root-only)",
+      "technique_id_list": "All Associated Techniques From The Group",
+    } %}
+
+    {% set base_order = ["group_id","group_name","group_score","rank","origin"] %}
+
+    {# default: no extra associated column #}
+    {% set associated_col = None %}
+    {% if mode == 'rule' %}
+      {% set extra_cols = ["matched_exact","matched_root_only"] %}
+      {% set origin_source = "origin" %}
+    {% else %}
+      {% set extra_cols = [] %}
+      {% set associated_col = "technique_id_list" %}
+      {% set origin_source = "doc_source" %}
+    {% endif %}
+
+    {% set first_row = rows|first %}
+    {% set keys = first_row.keys()|list if first_row else [] %}
+    {% set cols = (base_order + extra_cols) | select('in', keys) | list %}
+
+    <div style="overflow-x:auto;">
+      <table class="groups-table">
+        <thead>
+          <tr>
+            {% for c in cols %}
+              <th>{{ display.get(c, c|replace('_',' ')|title) }}</th>
+            {% endfor %}
+            {# render the “All Associated …” column ONLY if defined #}
+            {% if associated_col %}
+              <th>{{ display.get(associated_col, "All Associated TTPs") }}</th>
+            {% endif %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+            <tr>
+              {% for c in cols %}
+                {% if c == 'origin' %}
+                  <td>{{ row.get(origin_source, '—') }}</td>
+                {% else %}
+                  <td>{{ row.get(c, '—') }}</td>
+                {% endif %}
+              {% endfor %}
+              {% if associated_col %}
+                <td><div class="ttp-cell">{{ row.get(associated_col, '—') }}</div></td>
+              {% endif %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+{%- endmacro %}
+
+
 
 <body>
   {% if not export_mode %}
@@ -211,35 +279,11 @@
         <h4>Inputted Techniques</h4>
         <p><code>{{ ttps | join(', ') }}</code></p>
       </div>
-
-      <div class="card">
-        <h4>Top 3 Matched Threat Groups</h4>
-        <div style="overflow-x:auto;">
-          <table>
-            {% if rule_matched and rule_matched|length > 0 %}
-              <thead>
-                <tr>
-                  {% for col in rule_matched[0].keys() if col != 'combined_ttps' %}
-                    <th>{{ col }}</th>
-                  {% endfor %}
-                  <th>All Associated TTPs</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for row in rule_matched %}
-                <tr>
-                  {% for col in rule_matched[0].keys() if col != 'combined_ttps' %}
-                    <td>{{ row[col] }}</td>
-                  {% endfor %}
-                  <td><div class="ttp-cell">{{ row.get('combined_ttps', '—') }}</div></td>
-                </tr>
-                {% endfor %}
-              </tbody>
-            {% else %}
-              <tr><td>No matches found.</td></tr>
-            {% endif %}
-          </table>
+        <div class="card">
+          <h4 class="section-title"><span class="section-num">A</span> Top 3 Matched Threat Groups</h4>
+          {{ group_table(rule_matched, 'rule') }}
         </div>
+
       </div>
 
       <div class="card">
@@ -296,35 +340,11 @@
         <h4>Inputted Techniques</h4>
         <p><code>{{ ttps | join(', ') }}</code></p>
       </div>
-
-      <div class="card">
-        <h4>Top 3 Matched Threat Groups</h4>
-        <div style="overflow-x:auto;">
-          <table>
-            {% if rob_matched and rob_matched|length > 0 %}
-              <thead>
-                <tr>
-                  {% for col in rob_matched[0].keys() if col not in ['combined_ttps', 'doc_source', 'score'] %}
-                    <th>{{ col }}</th>
-                  {% endfor %}
-                  <th>All Associated TTPs</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for row in rob_matched %}
-                <tr>
-                  {% for col in rob_matched[0].keys() if col not in ['combined_ttps', 'doc_source', 'score'] %}
-                    <td>{{ row[col] }}</td>
-                  {% endfor %}
-                  <td><div class="ttp-cell">{{ row.get('combined_ttps', '—') }}</div></td>
-                </tr>
-                {% endfor %}
-              </tbody>
-            {% else %}
-              <tr><td>No matches found.</td></tr>
-            {% endif %}
-          </table>
+        <div class="card">
+          <h4 class="section-title"><span class="section-num">A</span> Top 3 Matched Threat Groups</h4>
+          {{ group_table(rob_matched, 'roberta') }}
         </div>
+
       </div>
 
       <div class="card">

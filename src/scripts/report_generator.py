@@ -4,26 +4,14 @@ import re
 import pandas as pd
 from dotenv import load_dotenv
 from openai import OpenAI
-from docx import Document
-from docx.shared import Pt
-from docx.enum.text import WD_ALIGN_PARAGRAPH
 from datetime import datetime
 from pathlib import Path
 import sys
 ROOT = Path(__file__).resolve().parents[2]  # repo root
 sys.path.insert(0, str(ROOT))
 from project_paths import (
-    PROJECT_ROOT, DATA_ROOT, EXPERIMENTS_ROOT, SRC_ROOT, MODELS_ROOT, EXPERIMENTS_ROOT,SCRIPTS_DIR,
-    RAW_DIR, PROCESSED_DIR, EXTRACTED_PDFS_DIR,
-    MAPPED_DIR, EXCEL_DIR, MITIGATIONS_DIR,
-    ATTACK_STIX_DIR,PDFS_DIR,RULES_DIR,EXTRACT_SCRIPT,ATTACK_SCRIPT,MAP_IOCS_SCRIPT,
-    BUILD_DATASET_SCRIPT,MITIGATIONS_SCRIPT,
-    GROUP_TTPS_DETAIL_CSV,MATCHING_SCRIPT,REPORT_GENERATION_SCRIPT,TECHNIQUE_LABELS_SCRIPT,
-    TRAIN_ROBERTA_SCRIPT,PREDICT_SCRIPT,BEST_MODEL_DIR,
-    MAPPING_CSV,MITIGATIONS_CSV,EXCEL_ATTACK_TECHS,
-    EXTRACTED_IOCS_CSV,TI_GROUPS_TECHS_CSV,DATASET_CSV,LABELS_TXT,GROUP_TTPS_DETAIL_CSV,RANKED_GROUPS_CSV,
-    output_dir_for_folds, project_path,ensure_dir_tree,add_src_to_syspath
-)
+    PROJECT_ROOT,
+    GROUP_TTPS_DETAIL_CSV,MITIGATIONS_CSV,)
 INPUT_TTPS_CSV       = PROJECT_ROOT / "inputted_ttps.csv"
 MATCHED_RULE_CSV     = PROJECT_ROOT / "matched_groups_rule.csv"
 MATCHED_ROBERTA_CSV  = PROJECT_ROOT / "matched_groups_roberta.csv"
@@ -48,12 +36,6 @@ def load_csv_data():
     ttps_df            = pd.read_csv(INPUT_TTPS_CSV)
     matched_df_rule    = pd.read_csv(MATCHED_RULE_CSV)
     matched_df_roberta = pd.read_csv(MATCHED_ROBERTA_CSV)
-
-    if "score" in matched_df_rule.columns:
-        matched_df_rule = matched_df_rule.sort_values(by="score", ascending=False)
-    if "score" in matched_df_roberta.columns:
-        matched_df_roberta = matched_df_roberta.sort_values(by="score", ascending=False)
-
     input_ttps = ttps_df["TTP"].dropna().tolist()
     return input_ttps, matched_df_rule, matched_df_roberta
 
@@ -94,60 +76,6 @@ def load_mitigations_summary(mitigations_csv: str) -> str:
     except Exception as e:
         return f"Error reading mitigations CSV: {e}"
     
-# def load_filtered_mitigations(mitigations_csv: str, ttps: list[str]) -> pd.DataFrame:
-#     """
-#     Return only mitigation rows whose 'target id' matches any TTP in `ttps`,
-#     including sub-techniques (e.g., T1110.x matches T1110).
-#     """
-#     if not os.path.exists(mitigations_csv):
-#         raise FileNotFoundError(f"{mitigations_csv} not found")
-
-#     df = pd.read_csv(mitigations_csv)
-#     if "target id" not in df.columns:
-#         raise ValueError("mitigations.csv missing 'target id' column")
-
-#     df["target id"] = df["target id"].astype(str).str.strip().str.upper()
-
-#     roots = {t.split(".")[0] for t in ttps}
-#     def _match(tid: str) -> bool:
-#         tid = tid.upper().strip()
-#         return any(tid == t or tid.startswith(f"{t}.") for t in ttps) or tid.split(".")[0] in roots
-
-#     return df[df["target id"].apply(_match)].copy()
-
-#MICHAEL FIXING MITIGATION
-
-
-# def load_filtered_mitigations(mitigation_csv: str, ttps: list[str]) -> pd.DataFrame:
-#     """
-#     Strictly filters mitigations so that:
-#     - 'T1020' matches only 'T1020'
-#     - 'T1020.001' matches only 'T1020.001'
-#     - no partial prefix matches allowed.
-#     """
-#     if not mitigation_csv or not Path(mitigation_csv).exists():
-#         print(f"[WARN] Mitigation CSV missing: {mitigation_csv}")
-#         return pd.DataFrame()
-
-#     df = pd.read_csv(mitigation_csv)
-#     if df.empty or not ttps:
-#         return pd.DataFrame()
-
-#     # Normalize
-#     df.columns = [c.strip().lower() for c in df.columns]
-#     if "target id" not in df.columns:
-#         print("[WARN] Missing 'target id' column in mitigations CSV.")
-#         return pd.DataFrame()
-
-#     # Clean up the list
-#     ttps_clean = [t.strip().upper() for t in ttps if isinstance(t, str) and t.strip()]
-
-#     # --- Exact Match Filter ---
-#     df["target id"] = df["target id"].astype(str).str.upper().str.strip()
-#     filtered_rows = df[df["target id"].isin(ttps_clean)]
-
-#     print(f"[DEBUG] {len(filtered_rows)} mitigations matched EXACT technique IDs out of {len(df)} total.")
-#     return filtered_rows
 
 def load_filtered_mitigations(mitigations_csv: str, ttps: list[str]) -> pd.DataFrame:
     """
@@ -212,42 +140,6 @@ def load_filtered_mitigations(mitigations_csv: str, ttps: list[str]) -> pd.DataF
     print(f"[DEBUG] Strict match: {len(matched_df)} mitigations found for {len(ttps_clean)} input TTPs.")
     print(f"[DEBUG] Example matched IDs (sorted): {matched_df['target id'].head(10).tolist()}")
     return matched_df
-
-
-    # id_re = re.compile(r"\bT\d{4}(?:\.\d{3})?\b")
-
-    # def _row_has_match(cell: str) -> bool:
-    #     # extract only complete TIDs from this row
-    #     ids = [m.group(0).strip() for m in id_re.finditer(cell.upper())]
-    #     # true only if ANY id is exactly in our group’s TTP list or a sub-technique of it
-    #     for tid in ids:
-    #         if tid in ttp_set:
-    #             return True
-    #         # sub-technique relationship:  T1059 matches T1059.001 etc.
-    #         base = tid.split(".")[0]
-    #         if base in ttp_set and tid.startswith(base + "."):
-    #             return True
-    #     return False
-
-    # id_re = re.compile(r"\bT\d{4}(?:\.\d{3})?\b")
-
-    # def _row_has_match(cell: str) -> bool:
-    #     ids = [m.group(0).strip() for m in id_re.finditer(cell.upper())]
-    #     for tid in ids:
-    #         if tid in ttp_set:
-    #             return True
-    #         base = tid.split(".")[0]
-    #         if base in ttp_set and tid.startswith(base + "."):
-    #             return True
-    #     return False
-
-
-    # matched = df[df["target id"].apply(_row_has_match)].copy()
-    # print(f"[DEBUG] Matched {len(matched)} mitigations out of {len(df)}")
-    # return matched
-
-
-
 
 # ===========================
 # GPT Analysis
@@ -462,82 +354,26 @@ def parse_ai_response(text: str) -> dict:
 # Generate Word Report
 # ===========================
 def load_mitigations_summary(mitigations_csv: str) -> str:
-    """
-    Load and summarize mitigations.csv content for the defensive mitigations section.
-    """
     if not os.path.exists(mitigations_csv):
         return "No mitigations file found."
-
     try:
         df = pd.read_csv(mitigations_csv)
         cols = [c for c in ["target id", "target name", "mapping description"] if c in df.columns]
         if not cols:
-            return "Mitigations file missing expected columns."
-
+            return "Mitigations data is missing expected columns."
         df = df[cols].dropna(how="all")
 
         lines = []
         for (tid, tname), grp in df.groupby([c for c in ["target id", "target name"] if c in df.columns]):
             desc_col = "mapping description" if "mapping description" in grp.columns else None
-            descs = []
-            if desc_col:
-                descs = grp[desc_col].dropna().astype(str).head(2).tolist()
-            line = f"{tid} – {tname}\n" + "\n".join(f"• {d}" for d in descs)
-            lines.append(line)
+            descs = grp[desc_col].dropna().astype(str).head(2).tolist() if desc_col else []
+            lines.append(f"{tid} – {tname}\n" + "\n".join(f"• {d}" for d in descs))
             if len(lines) >= 40:
                 break
 
-        return "\n".join(lines) if lines else "No mitigation mappings found."
-
+        return "\n".join(lines) if lines else "No mitigation mappings available."
     except Exception as e:
         return f"Error reading mitigations CSV: {e}"
-
-def generate_word_report(report_text, input_ttps, mitigations_csv=None):
-    parsed = parse_ai_response(report_text)
-
-    template_path = PROJECT_ROOT / "templates" / "cleaned_report_template.docx"
-
-    if not template_path.exists():
-        raise FileNotFoundError(f"Template not found at: {template_path}")
-
-    doc = Document(template_path)
-
-    # Update metadata
-    for para in doc.paragraphs:
-        if "Generated on:" in para.text:
-            para.text = f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        elif "Detected TTPs:" in para.text:
-            para.text = f"Detected TTPs: {', '.join(input_ttps)}"
-
-    # Populate main report sections
-    for i, para in enumerate(doc.paragraphs):
-        text = para.text.strip().lower()
-
-        if "1. analysis summary" in text:
-            doc.paragraphs[i + 1].text = parsed["summary"] or "N/A"
-
-        elif "2. overlap table" in text:
-            lines = [l.strip("| ").split("|") for l in parsed["table"].splitlines() if "|" in l]
-            if len(lines) > 1 and len(doc.tables) > 0:
-                table = doc.tables[0]
-                for row_data in lines[1:]:
-                    row = table.add_row().cells
-                    row[0].text = row_data[0].strip()
-                    row[1].text = row_data[1].strip()
-
-        elif "3. most likely attacker" in text:
-            doc.paragraphs[i + 1].text = parsed["attacker"] or "N/A"
-
-        elif "4. defensive mitigations" in text:
-            if mitigations_csv and os.path.exists(mitigations_csv := str(mitigations_csv)):
-                mitigations_text = load_mitigations_summary(mitigations_csv)
-                doc.paragraphs[i + 1].text = mitigations_text
-            else:
-                # fallback to parsed mitigation if CSV missing
-                doc.paragraphs[i + 1].text = parsed.get("mitigation", "[Mitigations CSV not found or invalid.]")
-
-        elif "5. analyst suggestions" in text:
-            doc.paragraphs[i + 1].text = parsed["suggestion"] or "[Add reflection, lessons learned, or recommendations here.]"
 
 def summarize_mitigations(mitigations: list[dict]) -> str:
     """
@@ -704,12 +540,6 @@ if __name__ == "__main__":
     # Extract the selected TTPs (still used in the report header etc.)
     input_ttps = ttps_df["TTP"].dropna().astype(str).str.upper().tolist()
 
-    # Sort matches for a clean prompt (if score is available)
-    if "score" in matched_df_rules.columns:
-        matched_df_rules = matched_df_rules.sort_values(by="score", ascending=False)
-    if "score" in matched_df_roberta.columns:
-        matched_df_roberta = matched_df_roberta.sort_values(by="score", ascending=False)
-
     # --- Mitigations source (global) ---
     mitigations_src = MITIGATIONS_CSV
     if not mitigations_src.exists():
@@ -732,11 +562,9 @@ if __name__ == "__main__":
     # --- RULES analysis+report (mitigations limited to its top group) ---
     print("\n[RUN] RULE-BASED analysis…")
     report_rules = analyze_TTP(input_ttps, matched_df_rules, mitigations_csv=mit_rules_csv)
-    generate_word_report(report_rules, input_ttps, mitigations_csv=mit_rules_csv)
 
     # --- ROBERTA analysis+report (mitigations limited to its top group) ---
     print("\n[RUN] ROBERTA analysis…")
     report_roberta = analyze_TTP(input_ttps, matched_df_roberta, mitigations_csv=mit_roberta_csv)
-    generate_word_report(report_roberta, input_ttps, mitigations_csv=mit_roberta_csv)
 
     print("\n[OK] Done. Generated reports with mitigations scoped to the first actor only (per run).")

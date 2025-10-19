@@ -7,6 +7,7 @@ Dataset CSV schema (required columns): id, text, labels, split
 - split: one of train / val / test (case-insensitive; script respects your splits)
 
 """
+#######TO FIX THE FOLDS
 
 from __future__ import annotations
 import csv
@@ -22,6 +23,7 @@ import numpy as np
 import torch
 import shutil
 import torch.nn.functional as F
+from typing import Iterable
 
 from transformers import (
     AutoTokenizer,
@@ -32,7 +34,7 @@ from transformers import (
     TrainingArguments,
 )
 from pathlib import Path
-import sys
+import sys, subprocess
 
 ROOT = Path(__file__).resolve().parents[2]  # repo root
 sys.path.insert(0, str(ROOT))
@@ -95,7 +97,7 @@ class Config:
     USE_KFOLD: bool = True     # <- disable k-fold when using random split
     USE_RANDOM_SPLIT: bool = True
     SPLIT_RATIOS: tuple[float, float, float] = (0.8, 0.1, 0.1)
-    N_FOLDS: int = 0               # 5-fold by default
+    N_FOLDS: int = 5               # 5-fold by default
     SHUFFLE_POOL: bool = True      # Shuffle train+val pool before folding
 
     OUTPUT_DIR = output_dir_for_folds(N_FOLDS, model_slug="roberta_base_v1")
@@ -150,6 +152,17 @@ def ensure_labels_file(labels_path: pathlib.Path, csv_path: pathlib.Path) -> Lis
         labels_path.write_text("\n".join(labels) + "\n", encoding="utf-8")
         return labels
     return [l.strip() for l in labels_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+def run_output_dir(k: int, model_slug: str = "roberta_base_v1") -> Path:
+    """
+    All intermediate runs live under EXPERIMENTS_ROOT.
+    Example: <EXPERIMENTS_ROOT>/0foldruns/roberta_base_v1
+             <EXPERIMENTS_ROOT>/5foldruns/roberta_base_v1
+    """
+    name = f"{k}foldruns/{model_slug}" if k >= 2 else f"0foldruns/{model_slug}"
+    d = EXPERIMENTS_ROOT / name
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def print_run_banner(labels: List[str], cfg: Config, out_dir: pathlib.Path):
@@ -390,8 +403,65 @@ def maybe_early_stopping(use_eval_in_training: bool, cfg: Config, targs: Trainin
                                       early_stopping_threshold=0.0)]
     except Exception:
         return None
+    
+
+def run(cmd: list[str], cwd: Path | None = None) -> None:
+    print(f"\n$ {' '.join(map(str, cmd))}")
+    res = subprocess.run(cmd, cwd=str(cwd) if cwd else None)
+    if res.returncode != 0:
+        raise SystemExit(res.returncode)
+
+def needs_run(outputs: Iterable[Path], inputs: Iterable[Path] = ()) -> bool:
+    outs = list(outputs)
+    if not outs or any(not p.exists() for p in outs):
+        return True  # missing outputs => run
+
+    # If any input (or the script itself) is newer than any output => run
+    out_mtime = min(p.stat().st_mtime for p in outs)
+    ins = [p for p in inputs if p is not None and Path(p).exists()]
+    if not ins:
+        return False
+    return max(Path(p).stat().st_mtime for p in ins) > out_mtime
+
+def step_build_dataset():
+    outputs = [DATASET_CSV, LABELS_TXT]
+    inputs  = [BUILD_DATASET_SCRIPT, EXTRACTED_IOCS_CSV, TI_GROUPS_TECHS_CSV]
+    if not needs_run(outputs, inputs=inputs):
+        print(f"[SKIP] build_dataset.py — up to date: {DATASET_CSV}, {LABELS_TXT}")
+        return
+    run([sys.executable, str(BUILD_DATASET_SCRIPT)])
+
+def finalize_and_cleanup(best_src_dir: Path | None, best_dir: Path, experiments_root: Path):
+    """
+    Copy the best run into BEST_DIR, then remove EXPERIMENTS_ROOT entirely.
+    Safe to call even if best_src_dir is None.
+    """
+    if best_src_dir is None:
+        print("[WARN] No best run produced; skipping export to BEST_DIR.")
+    else:
+        # Fresh BEST_DIR
+        try:
+            if best_dir.exists():
+                shutil.rmtree(best_dir)
+        except Exception as e:
+            print(f"[WARN] Could not remove existing BEST_DIR {best_dir}: {e}")
+        try:
+            shutil.copytree(best_src_dir, best_dir)
+            print(f"[OK] Exported best model from {best_src_dir} → {best_dir}")
+        except Exception as e:
+            print(f"[ERROR] Failed to copy best model to {best_dir}: {e}")
+
+    # Try to delete the entire experiments folder
+    try:
+        if experiments_root.exists():
+            shutil.rmtree(experiments_root)
+            print(f"[OK] Deleted experiments folder: {experiments_root}")
+    except Exception as e:
+        print(f"[WARN] Failed to delete experiments folder {experiments_root}: {e}")
 
 def main():
+    ensure_dir_tree()
+    step_build_dataset()
     cfg = CFG
     set_seed(cfg.SEED)
 
@@ -401,6 +471,17 @@ def main():
     if len(labels) == 0:
         print("[ERROR] Label space is empty. Ensure ti_groups_techniques.csv maps your techniques to groups.")
         return
+    # Probe CSV once so we can handle k-fold even without a 'split' column
+    with cfg.CSV_PATH.open("r", encoding="utf-8") as f:
+        _rows_probe = list(csv.DictReader(f))
+    _has_split_col = bool(_rows_probe and "split" in _rows_probe[0])
+
+    # Build run list from CFG.N_FOLDS (single point of control)
+    # Option A: random split + exactly one k-fold with k = N_FOLDS
+    run_ks = [0] + ([cfg.N_FOLDS] if cfg.N_FOLDS >= 2 else [])
+
+    # If you instead want every k from 2..N_FOLDS, use this:
+    # run_ks = [0] + (list(range(2, cfg.N_FOLDS + 1)) if cfg.N_FOLDS >= 2 else [])
 
     # --- Static artifacts for model init (shared across runs) ---
     label2id = {l: i for i, l in enumerate(labels)}
@@ -421,14 +502,10 @@ def main():
     best_score = -1.0
     best_src_dir: Path | None = None
 
-    # --- Try k = 0..10 (skip k=1) ---
-    for k in range(0, 11):
-        if k == 1:
-            continue
-
-        # Decide split mode & run directory
+    for k in run_ks:
         use_random_split = (k == 0)
         use_kfold = (k >= 2)
+
         if use_kfold:
             cfg.USE_KFOLD = True
             cfg.USE_RANDOM_SPLIT = False
@@ -436,10 +513,12 @@ def main():
         else:
             cfg.USE_KFOLD = False
             cfg.USE_RANDOM_SPLIT = True
+            cfg.N_FOLDS = 0
 
-        run_dir = output_dir_for_folds(k if use_kfold else 0, model_slug="roberta_base_v1")
-        run_dir.mkdir(parents=True, exist_ok=True)
+        run_dir = run_output_dir(k if use_kfold else 0, model_slug="roberta_base_v1")
         print_run_banner(labels, cfg, run_dir)
+
+
 
         # Write static artifacts for this run
         (run_dir / "label2id.json").write_text(json.dumps(label2id, indent=2), encoding="utf-8")
@@ -662,16 +741,24 @@ def main():
             except Exception as e:
                 print(f"[WARN] Failed to copy best run to {BEST_DIR}: {e}")
 
+    # if best_src_dir is None:
+    #     print("[WARN] No best model selected (scores missing?).")
+    # else:
+    #     print(f"[OK] Finished. Best model from: {best_src_dir}  →  {BEST_DIR}")
+    # # Finally, prune experiments (keep only metrics.json and README.txt)
     if best_src_dir is None:
         print("[WARN] No best model selected (scores missing?).")
     else:
         print(f"[OK] Finished. Best model from: {best_src_dir}  →  {BEST_DIR}")
-    # Finally, prune experiments (keep only metrics.json and README.txt)
-    try:
-        prune_experiments(EXPERIMENTS_ROOT)
-        print(f"[OK] Pruned experiments under {EXPERIMENTS_ROOT} (kept metrics.json & README.txt per run).")
-    except Exception as e:
-        print(f"[WARN] Pruning experiments failed: {e}")
+
+    # Replace previous prune_experiments(...) with:
+    finalize_and_cleanup(best_src_dir=best_src_dir, best_dir=BEST_DIR, experiments_root=EXPERIMENTS_ROOT)
+
+    # try:
+    #     prune_experiments(EXPERIMENTS_ROOT)
+    #     print(f"[OK] Pruned experiments under {EXPERIMENTS_ROOT} (kept metrics.json & README.txt per run).")
+    # except Exception as e:
+    #     print(f"[WARN] Pruning experiments failed: {e}")
 
 if __name__ == "__main__":
     main()

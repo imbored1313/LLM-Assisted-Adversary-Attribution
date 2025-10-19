@@ -30,16 +30,14 @@ EXTRACTED_PDFS_DIR = DATA_ROOT / "extracted_pdfs"
 
 # If you previously had a capitalized "Data" folder, keep a single spelling.
 # Using lowercase "data" everywhere is best for cross-platform use.
-MAPPED_DIR      = DATA_ROOT / "mapped"   #DATA_DIR
-EXCEL_DIR       = DATA_ROOT / "excel"
-MITIGATIONS_DIR = DATA_ROOT / "mitigations"
+
 
 # Raw data subdirs
 ATTACK_STIX_DIR = RAW_DIR / "attack_stix"
 PDFS_DIR        = RAW_DIR / "pdfs"
+EXCEL_DIR       = RAW_DIR / "excel"
 
-# Processed subdirs
-RULES_DIR       = PROCESSED_DIR / "rules"
+
 
 # ---------- Script entry points (import/CLI) ----------
 # Move these files into src/scripts/ to match:
@@ -56,10 +54,12 @@ TRAIN_ROBERTA_SCRIPT  = MODELS_ROOT / "train_roberta.py"
 PREDICT_SCRIPT        = MODELS_ROOT / "predict_roberta.py"
 BEST_MODEL_DIR        = MODELS_ROOT / "best_roberta_for_predict"
 
-# Frequently-used files
-MAPPING_CSV           = SCRIPTS_DIR / "techniques_mapping.csv"
-MITIGATIONS_CSV       = MITIGATIONS_DIR / "mitigations.csv"
-EXCEL_ATTACK_TECHS    = EXCEL_DIR / "enterprise-attack-v17.1-techniques.xlsx"
+
+
+# Processed subdirs
+RULES_DIR       = PROCESSED_DIR / "rules"
+MAPPED_DIR      = PROCESSED_DIR / "mapped"   #DATA_DIR
+MITIGATIONS_DIR = PROCESSED_DIR / "mitigations"
 
 # Outputs produced by scripts
 EXTRACTED_IOCS_CSV    = PROCESSED_DIR / "extracted_iocs.csv"
@@ -70,7 +70,10 @@ LABELS_TXT            = PROCESSED_DIR / "labels.txt"
 GROUP_TTPS_DETAIL_CSV = PROCESSED_DIR / "group_ttps_detail.csv"
 RANKED_GROUPS_CSV     = PROCESSED_DIR / "ranked_groups.csv"
 
-
+# Frequently-used files
+MAPPING_CSV           = PROCESSED_DIR / "techniques_mapping.csv"
+MITIGATIONS_CSV       = MITIGATIONS_DIR / "mitigations.csv"
+EXCEL_ATTACK_TECHS    = EXCEL_DIR / "enterprise-attack-v17.1-techniques.xlsx"
 
 def output_dir_for_folds(n_folds: int, model_slug: str = "roberta_base"):
     return EXPERIMENTS_ROOT / f"{n_folds}foldruns" / model_slug
