@@ -432,33 +432,6 @@ def maybe_early_stopping(use_eval_in_training: bool, cfg: Config, targs: Trainin
                                       early_stopping_threshold=0.0)]
     except Exception:
         return None
-def finalize_and_cleanup(best_src_dir: Path | None, best_dir: Path, experiments_root: Path):
-    """
-    Copy the best run into BEST_DIR, then remove EXPERIMENTS_ROOT entirely.
-    Safe to call even if best_src_dir is None.
-    """
-    if best_src_dir is None:
-        print("[WARN] No best run produced; skipping export to BEST_DIR.")
-    else:
-        # Fresh BEST_DIR
-        try:
-            if best_dir.exists():
-                shutil.rmtree(best_dir)
-        except Exception as e:
-            print(f"[WARN] Could not remove existing BEST_DIR {best_dir}: {e}")
-        try:
-            shutil.copytree(best_src_dir, best_dir)
-            print(f"[OK] Exported best model from {best_src_dir} → {best_dir}")
-        except Exception as e:
-            print(f"[ERROR] Failed to copy best model to {best_dir}: {e}")
-
-    # Try to delete the entire experiments folder
-    try:
-        if experiments_root.exists():
-            shutil.rmtree(experiments_root)
-            print(f"[OK] Deleted experiments folder: {experiments_root}")
-    except Exception as e:
-        print(f"[WARN] Failed to delete experiments folder {experiments_root}: {e}")
 
 def main():
     cfg = CFG
@@ -701,10 +674,11 @@ def main():
                 print(f"[OK] New best model: {best_src_dir} (f1_micro={best_score:.3f}) → {BEST_DIR}")
             except Exception as e:
                 print(f"[WARN] Failed to copy best run to {BEST_DIR}: {e}")
-    # --- wrap up: export best & nuke experiments ---
-    finalize_and_cleanup(best_src_dir=best_src_dir,
-                         best_dir=BEST_DIR,
-                         experiments_root=EXPERIMENTS_ROOT)
+
+    if best_src_dir is None:
+        print("[WARN] No best model selected (scores missing?).")
+    else:
+        print(f"[OK] Finished. Best model from: {best_src_dir}  →  {BEST_DIR}")
 
 if __name__ == "__main__":
     main()

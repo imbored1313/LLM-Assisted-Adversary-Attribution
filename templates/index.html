@@ -47,51 +47,27 @@
           <button type="submit">Submit</button>
           <button type="button" id="clear-btn" style="background-color: #6c757d;">Clear</button>
         </form>
-        <div class="prog-track">
-          <div id="bar"></div>
-        </div>
-        <ul id="steps" style="list-style:none; padding-left:0; margin-top:10px;"></ul>
         <div id="build-controls" style="margin:1rem 0;">
-          <button type="button" id="btn-start">Build / Resume</button>
-          <button type="button" id="btn-force">Force Rebuild</button>
+          <button id="btn-start">Build / Resume</button>
+          <button id="btn-force">Force Rebuild</button>
           <span id="build-msg" style="margin-left:10px; font-style:italic;"></span>
         </div>
+
+        <div style="height:10px; background:#eee; border-radius:6px; overflow:hidden;">
+          <div id="bar" style="height:10px; width:0%; background:#4caf50;"></div>
+        </div>
+
+        <ul id="steps" style="list-style:none; padding-left:0; margin-top:10px;"></ul>
+
         <script>
-          // cache elements once
-          const btnStart = document.getElementById('btn-start');
-          const btnForce = document.getElementById('btn-force');
-          const barEl    = document.getElementById('bar');
-          const stepsEl  = document.getElementById('steps');
-          const msgEl    = document.getElementById('build-msg');
-
-          // attach handlers ONCE (not inside poll)
-          btnStart.addEventListener('click', (e) => {
-            e.preventDefault(); e.stopPropagation();
-            startBuild(false);
-          });
-          btnForce.addEventListener('click', (e) => {
-            e.preventDefault(); e.stopPropagation();
-            startBuild(true);
-          });
-
-          async function poll() {
+        async function poll() {
           const r = await fetch('/status');
           const s = await r.json();
 
-          // buttons (unchanged)
-          document.getElementById('btn-start').onclick = (e) => { e.preventDefault(); startBuild(false); };
-          document.getElementById('btn-force').onclick = (e) => { e.preventDefault(); startBuild(true); };
-
           // progress bar
-          const bar = document.getElementById('bar');
-          if (s.indeterminate) {
-            bar.classList.add('indeterminate');
-          } else {
-            bar.classList.remove('indeterminate');
-            bar.style.width = (s.pct || 0) + '%';
-          }
+          document.getElementById('bar').style.width = (s.pct || 0) + '%';
 
-          // steps
+          // steps list
           const ul = document.getElementById('steps');
           ul.innerHTML = '';
           (s.steps || []).forEach(step => {
@@ -101,38 +77,27 @@
           });
 
           // message
-          const msgEl = document.getElementById('build-msg');
-          if (s.indeterminate) {
-            msgEl.classList.add('dotdotdot');
-            msgEl.textContent = 'Training RoBERTa, this can take a while';
-          } else {
-            msgEl.classList.remove('dotdotdot');
-            msgEl.textContent = s.msg || (s.running ? 'Working…' : 'Idle');
-          }
-
-          // throttle polling if training (less chatty)
-          if (s.indeterminate) {
-            setTimeout(poll, 4000);
-          } else {
-            setTimeout(poll, 1500);
-          }
+          document.getElementById('build-msg').textContent = s.msg || (s.running ? 'Working…' : 'Idle');
         }
 
         async function startBuild(force=false) {
           const fd = new FormData();
           fd.append('force', force ? '1' : '0');
-          const r = await fetch('/build', { method: 'POST', body: fd });
+          const r = await fetch('/build', {method:'POST', body:fd});
           const j = await r.json();
           document.getElementById('build-msg').textContent = j.msg || (j.ok ? 'Started.' : 'Error');
-          // re-poll quickly right after starting
-          setTimeout(poll, 250);
+          poll(); // refresh immediately
         }
 
-        // kick off
-        poll();
-          setInterval(poll, 1500);
-        </script>
+        document.getElementById('btn-start').addEventListener('click', () => startBuild(false));
+        document.getElementById('btn-force').addEventListener('click', () => startBuild(true));
 
+        // kick off polling loop
+        poll();
+        setInterval(poll, 1500);
+        </script>
+      </article>
+    </div>
 <script>
   const dropdown = document.getElementById('dropdown');
   const display = document.getElementById('dropdown-display');

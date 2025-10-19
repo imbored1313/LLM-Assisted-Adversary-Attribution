@@ -559,7 +559,6 @@ PROG = {
     "pct": 0,
     "steps": [],   # list of {"name": str, "state": "pending|running|done|skip|error", "msg": str}
     "msg": "",
-    "indeterminate": False,  
 }
 _lock = Lock()
 
@@ -569,7 +568,6 @@ def _init_progress(step_names):
         PROG["pct"] = 0
         PROG["msg"] = "Starting…"
         PROG["steps"] = [{"name": n, "state": "pending", "msg": ""} for n in step_names]
-        PROG["indeterminate"] = False
 
 def _set_step_state(i, state, msg=""):
     with _lock:
@@ -698,56 +696,27 @@ def step_mitigations(force: bool = False):
     _set_step_state(i, "done", "mitigations.csv ready.")
 
 
-# def step_train_roberta_if_needed():
-#     name = STEP_NAMES["train"]
-#     i = _step_index(name)
-#     _set_step_state(i, "running", "Checking/Training RoBERTa…")
-
-#     if not _needs_training(BEST_MODEL_DIR):
-#         _set_step_state(i, "skip", f"Usable model found in {BEST_MODEL_DIR.name}.")
-#         return
-
-#     # sanity check dataset before training
-#     assert_dataset_ready()
-#     res = subprocess.run([sys.executable, str(TRAIN_ROBERTA_SCRIPT)], cwd=str(PROJECT_ROOT))
-#     if res.returncode != 0:
-#         _set_step_state(i, "error", "train_roberta.py failed.")
-#         raise RuntimeError(f"train_roberta.py exited {res.returncode}")
-
-#     if _needs_training(BEST_MODEL_DIR):
-#         _set_step_state(i, "error", "Best model artifacts still incomplete.")
-#         raise RuntimeError("Best model missing after training.")
-#     _set_step_state(i, "done", "Best model ready.")
-
 def step_train_roberta_if_needed():
     name = STEP_NAMES["train"]
     i = _step_index(name)
     _set_step_state(i, "running", "Checking/Training RoBERTa…")
 
-    # turn on indeterminate UI while this step is running
-    with _lock:
-        PROG["indeterminate"] = True
+    if not _needs_training(BEST_MODEL_DIR):
+        _set_step_state(i, "skip", f"Usable model found in {BEST_MODEL_DIR.name}.")
+        return
 
-    try:
-        if not _needs_training(BEST_MODEL_DIR):
-            _set_step_state(i, "skip", f"Usable model found in {BEST_MODEL_DIR.name}.")
-            return
+    # sanity check dataset before training
+    assert_dataset_ready()
+    res = subprocess.run([sys.executable, str(TRAIN_ROBERTA_SCRIPT)], cwd=str(PROJECT_ROOT))
+    if res.returncode != 0:
+        _set_step_state(i, "error", "train_roberta.py failed.")
+        raise RuntimeError(f"train_roberta.py exited {res.returncode}")
 
-        assert_dataset_ready()
-        res = subprocess.run([sys.executable, str(TRAIN_ROBERTA_SCRIPT)], cwd=str(PROJECT_ROOT))
-        if res.returncode != 0:
-            _set_step_state(i, "error", "train_roberta.py failed.")
-            raise RuntimeError(f"train_roberta.py exited {res.returncode}")
+    if _needs_training(BEST_MODEL_DIR):
+        _set_step_state(i, "error", "Best model artifacts still incomplete.")
+        raise RuntimeError("Best model missing after training.")
+    _set_step_state(i, "done", "Best model ready.")
 
-        if _needs_training(BEST_MODEL_DIR):
-            _set_step_state(i, "error", "Best model artifacts still incomplete.")
-            raise RuntimeError("Best model missing after training.")
-
-        _set_step_state(i, "done", "Best model ready.")
-    finally:
-        # always turn it off when this step finishes or errors
-        with _lock:
-            PROG["indeterminate"] = False
 
 def _is_empty_dir(p: Path) -> bool:
     return (not p.exists()) or (next(p.iterdir(), None) is None)
@@ -858,30 +827,6 @@ def _pipeline(force=False):
     finally:
         _finish_progress()
 
-# ---- add this helper near your other helpers ----
-def _autobuild_needed() -> bool:
-    """
-    Return True if a first-run or stale state is detected and we should
-    auto-start the pipeline from index(). We only check for the presence
-    of key outputs and a usable best model.
-    """
-    # core CSV outputs produced by your pipeline
-    required = [
-        TI_GROUPS_TECHS_CSV,      # enterprise tables
-        EXTRACTED_IOCS_CSV,       # IOC CSV
-        RANKED_GROUPS_CSV,        # ranked groups
-        GROUP_TTPS_DETAIL_CSV,    # group→TTPs detail
-        DATASET_CSV,              # dataset
-        LABELS_TXT,               # labels
-        MITIGATIONS_CSV,          # mitigations
-    ]
-    # if any is missing -> need to build
-    if any(not p.exists() for p in required):
-        return True
-    # if the “best model” is missing/incomplete -> need to (re)train
-    if _needs_training(BEST_MODEL_DIR):
-        return True
-    return False
 
 # ============================================
 # Index & Workflow
@@ -907,12 +852,6 @@ def build():
 def index():
     ensure_dir_tree()
     try:
-        with _lock:
-            if not PROG.get("running") and _autobuild_needed():
-                # initialize a fresh progress state for the UI
-                PROG.update({"running": False, "pct": 0, "steps": [], "msg": "Starting…"})
-                t = Thread(target=_pipeline, kwargs={"force": False}, daemon=True)
-                t.start()
         # Always regenerate latest mapping from Excel
         extract_techniques(EXCEL_ATTACK_TECHS, MAPPING_CSV)
 
