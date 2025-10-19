@@ -1,6 +1,3 @@
-
-
-
 #!/usr/bin/env python3
 """
 train_roberta.py — zero-CLI version with baked-in config (just run: python train_roberta.py)
@@ -14,7 +11,7 @@ Dataset CSV schema (required columns): id, text, labels, split
 from __future__ import annotations
 import csv
 import json
-import pathlib
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 from inspect import signature
@@ -23,9 +20,9 @@ import numpy as np
 from torch.utils.data import Dataset
 import numpy as np
 import torch
-import shutil
 import sys
-from pathlib import Path
+import shutil
+
 from transformers import (
     AutoTokenizer,
     AutoConfig,
@@ -61,6 +58,8 @@ except Exception:
 
 def output_dir_for_folds(n_folds: int, model_slug: str = "roberta_base"):
     return EXPERIMENTS_ROOT / f"{n_folds}foldruns" / model_slug
+
+
 # =====================================================================
 #                         EDIT ME
 # =====================================================================
@@ -120,7 +119,7 @@ def set_seed(seed: int):
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
 
-def scan_split_counts(csv_path: pathlib.Path) -> Dict[str, int]:
+def scan_split_counts(csv_path: Path) -> Dict[str, int]:
     counts = {"train": 0, "val": 0, "test": 0}
     with csv_path.open("r", encoding="utf-8") as f:
         for r in csv.DictReader(f):
@@ -130,7 +129,7 @@ def scan_split_counts(csv_path: pathlib.Path) -> Dict[str, int]:
     print(f"[INFO] Split counts: train={counts['train']}  val={counts['val']}  test={counts['test']}")
     return counts
 
-def read_labels_from_csv(csv_path: pathlib.Path, groups_only: bool, tech2groups: dict[str, set[str]]) -> List[str]:
+def read_labels_from_csv(csv_path: Path, groups_only: bool, tech2groups: dict[str, set[str]]) -> List[str]:
     uniq = set()
     with csv_path.open("r", encoding="utf-8") as f:
         for r in csv.DictReader(f):
@@ -168,14 +167,14 @@ def read_labels_from_csv(csv_path: pathlib.Path, groups_only: bool, tech2groups:
         labels = tech + grp
     return labels
 
-def ensure_labels_file(labels_path: pathlib.Path, csv_path: pathlib.Path, groups_only: bool, tech2groups: dict[str, set[str]]) -> List[str]:
+def ensure_labels_file(labels_path: Path, csv_path:Path, groups_only: bool, tech2groups: dict[str, set[str]]) -> List[str]:
     if not labels_path.exists():
         labels = read_labels_from_csv(csv_path, groups_only=groups_only, tech2groups=tech2groups)
         labels_path.write_text("\n".join(labels) + "\n", encoding="utf-8")
         return labels
     return [l.strip() for l in labels_path.read_text(encoding="utf-8").splitlines() if l.strip()]
 
-def load_tech_to_groups_map(csv_path: pathlib.Path) -> dict[str, set[str]]:
+def load_tech_to_groups_map(csv_path: Path) -> dict[str, set[str]]:
     m: dict[str, set[str]] = {}
     path = csv_path
     if not path.exists():
@@ -191,7 +190,7 @@ def load_tech_to_groups_map(csv_path: pathlib.Path) -> dict[str, set[str]]:
             m.setdefault(tid, set()).add(g)
     return m
 
-def print_run_banner(labels: List[str], cfg: Config, out_dir: pathlib.Path):
+def print_run_banner(labels: List[str], cfg: Config, out_dir: Path):
     # Console banner with folds + hyperparameters
     print(
         "[OK] Labels loaded: {:d} | Folds: {} | Model: {} | "
@@ -205,7 +204,7 @@ def print_run_banner(labels: List[str], cfg: Config, out_dir: pathlib.Path):
         )
     )
 
-def write_readme(out_dir: pathlib.Path, labels: List[str], cfg: Config):
+def write_readme(out_dir: Path, labels: List[str], cfg: Config):
     readme = (
         f"Model: {cfg.MODEL_NAME}\n"
         f"Labels: {len(labels)}\n"
@@ -223,13 +222,13 @@ def write_readme(out_dir: pathlib.Path, labels: List[str], cfg: Config):
     )
     (out_dir / "README.txt").write_text(readme, encoding="utf-8")
 
-def compute_output_dir(cfg: Config) -> pathlib.Path:
+def compute_output_dir(cfg: Config) -> Path:
     """
     When k-fold is enabled, place outputs under '{N}foldruns/roberta'.
     Otherwise respect cfg.OUTPUT_DIR.
     """
     if cfg.USE_KFOLD:
-        return pathlib.Path(f"{cfg.N_FOLDS}foldruns/roberta")
+        return Path(f"{cfg.N_FOLDS}foldruns/roberta")
     return cfg.OUTPUT_DIR
 
 
@@ -371,7 +370,7 @@ def make_compute_metrics(threshold: float):
     return compute_metrics
 
 # --- Version-agnostic TrainingArguments builder ---
-def build_training_args(cfg: Config, do_eval_in_training: bool, out_dir: pathlib.Path) -> TrainingArguments:
+def build_training_args(cfg: Config, do_eval_in_training: bool, out_dir: Path) -> TrainingArguments:
     sig = signature(TrainingArguments.__init__)
     allowed = set(sig.parameters.keys())
 
@@ -432,33 +431,6 @@ def maybe_early_stopping(use_eval_in_training: bool, cfg: Config, targs: Trainin
                                       early_stopping_threshold=0.0)]
     except Exception:
         return None
-def finalize_and_cleanup(best_src_dir: Path | None, best_dir: Path, experiments_root: Path):
-    """
-    Copy the best run into BEST_DIR, then remove EXPERIMENTS_ROOT entirely.
-    Safe to call even if best_src_dir is None.
-    """
-    if best_src_dir is None:
-        print("[WARN] No best run produced; skipping export to BEST_DIR.")
-    else:
-        # Fresh BEST_DIR
-        try:
-            if best_dir.exists():
-                shutil.rmtree(best_dir)
-        except Exception as e:
-            print(f"[WARN] Could not remove existing BEST_DIR {best_dir}: {e}")
-        try:
-            shutil.copytree(best_src_dir, best_dir)
-            print(f"[OK] Exported best model from {best_src_dir} → {best_dir}")
-        except Exception as e:
-            print(f"[ERROR] Failed to copy best model to {best_dir}: {e}")
-
-    # Try to delete the entire experiments folder
-    try:
-        if experiments_root.exists():
-            shutil.rmtree(experiments_root)
-            print(f"[OK] Deleted experiments folder: {experiments_root}")
-    except Exception as e:
-        print(f"[WARN] Failed to delete experiments folder {experiments_root}: {e}")
 
 def main():
     cfg = CFG
@@ -701,10 +673,11 @@ def main():
                 print(f"[OK] New best model: {best_src_dir} (f1_micro={best_score:.3f}) → {BEST_DIR}")
             except Exception as e:
                 print(f"[WARN] Failed to copy best run to {BEST_DIR}: {e}")
-    # --- wrap up: export best & nuke experiments ---
-    finalize_and_cleanup(best_src_dir=best_src_dir,
-                         best_dir=BEST_DIR,
-                         experiments_root=EXPERIMENTS_ROOT)
+
+    if best_src_dir is None:
+        print("[WARN] No best model selected (scores missing?).")
+    else:
+        print(f"[OK] Finished. Best model from: {best_src_dir}  →  {BEST_DIR}")
 
 if __name__ == "__main__":
     main()
