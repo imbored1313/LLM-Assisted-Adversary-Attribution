@@ -206,7 +206,8 @@
       "group_score": "Match Score",
       "rank": "Rank",
       "origin": "Origin",
-      "matched_exact": "Matched (Exact)",
+      "associated_ttps": "Associated TTPs",
+      "input_overlap": "Input Overlap",
       "technique_id_list": "All Associated Techniques From The Group",
     } %}
 
@@ -214,7 +215,7 @@
 
     {% set associated_col = None %}
     {% if mode == 'rule' %}
-      {% set extra_cols = ["matched_exact"] %}
+      {% set extra_cols = ["associated_ttps", "input_overlap"] %}
       {% set origin_source = "origin" %}
     {% else %}
       {% set extra_cols = [] %}

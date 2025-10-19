@@ -1,5 +1,4 @@
 from __future__ import annotations
-import csv
 import logging
 from pathlib import Path
 import re
@@ -24,7 +23,7 @@ TTP_RE = re.compile(r"^T\d{4}(?:\.\d{3})?$")
 TTP_PATTERN = re.compile(r"\bT\d{4}(?:\.\d{3})?\b", re.IGNORECASE)
 
 PREFERRED_KEYS = [
-    "matched_exact", "matched_root_only", "ttps", "ttp",
+    "matched_exact", "ttps", "ttp",
     "techniques", "technique", "attack"
 ]
 
@@ -46,10 +45,6 @@ def validate_ttps(ttps: Iterable[str]) -> Tuple[str, ...]:
 # Dataset loading
 # ============================================
 def load_combined_dataset(MAPPED_DIR: Path) -> pd.DataFrame:
-    """
-    Load and merge both 'group_ttps_detail.csv' and 'ranked_groups.csv'
-    if they exist. Duplicates are dropped.
-    """
     dfs = []
     if GROUP_TTPS_DETAIL_CSV.exists():
         dfs.append(pd.read_csv(GROUP_TTPS_DETAIL_CSV))
@@ -57,10 +52,8 @@ def load_combined_dataset(MAPPED_DIR: Path) -> pd.DataFrame:
     if RANKED_GROUPS_CSV.exists():
         dfs.append(pd.read_csv(RANKED_GROUPS_CSV))
         logging.info(f"Loaded {RANKED_GROUPS_CSV.name} ({len(dfs[-1])} rows)")
-
     if not dfs:
         raise FileNotFoundError(f"No datasets found in {MAPPED_DIR}")
-
     combined = pd.concat(dfs, ignore_index=True).drop_duplicates()
     logging.info(f"Combined dataset size: {len(combined)} rows")
     return combined
@@ -95,14 +88,14 @@ def split_tokens(cell) -> Set[str]:
     return set(m.upper() for m in TTP_PATTERN.findall(str(cell)))
 
 # ============================================
-# Strict matching (no root expansion)
+# Strict matching (with overlap tracking)
 # ============================================
 def match_ttps(ttps: Tuple[str, ...], MAPPED_DIR: Path) -> pd.DataFrame:
     """
     STRICT matching logic:
-    - Only matches exact input TTPs (no parent/root expansion).
-    - If input is T1110.001, it only matches dataset rows containing T1110.001.
-    - If input is T1110, it can still match sub-techniques if they explicitly appear in dataset.
+    - Only matches exact input TTPs (no root expansion).
+    - Adds a new column 'input_overlap' showing which input TTPs matched.
+    - Renames 'matched_exact' → 'associated_ttps' for clarity.
     """
     df = load_combined_dataset(MAPPED_DIR)
     ttp_col = find_ttp_column(df)
@@ -113,9 +106,19 @@ def match_ttps(ttps: Tuple[str, ...], MAPPED_DIR: Path) -> pd.DataFrame:
     # Build input set (strict)
     input_full = {t.upper() for t in ttps}
 
-    # Match only if any input exactly appears in dataset tokens
-    mask = df["_ttp_set"].apply(lambda s: bool(input_full & s))
-    matched = df.loc[mask].drop(columns=["_ttp_set"])
+    # Compute overlap
+    df["input_overlap"] = df["_ttp_set"].apply(
+        lambda s: ", ".join(sorted(input_full & s)) if input_full & s else ""
+    )
+
+    # Filter only rows with overlap
+    matched = df.loc[df["input_overlap"].astype(bool)].copy()
+
+    # Rename matched_exact → associated_ttps (for clarity)
+    if "matched_exact" in matched.columns:
+        matched.rename(columns={"matched_exact": "associated_ttps"}, inplace=True)
+
+    matched.drop(columns=["_ttp_set"], inplace=True, errors="ignore")
     return matched
 
 # ============================================
@@ -125,7 +128,9 @@ def write_outputs(matched: pd.DataFrame, ttps: Tuple[str, ...], out_dir: Path) -
     out_dir.mkdir(parents=True, exist_ok=True)
     matched_out = out_dir / "matched_groups_rule.csv"
     matched.to_csv(matched_out, index=False)
-    return matched_out, out_dir / "inputted_ttps.csv"
+    input_out = out_dir / "inputted_ttps.csv"
+    pd.DataFrame({"TTP": ttps}).to_csv(input_out, index=False)
+    return matched_out, input_out
 
 # ============================================
 # CLI entry point
@@ -141,7 +146,6 @@ def main() -> int:
         matched = match_ttps(ttps, MAPPED_DIR)
 
         m_out, t_out = write_outputs(matched, ttps, out_dir)
-        pd.DataFrame({"TTP": ttps}).to_csv(t_out, index=False)
 
         logging.info(f"Matched {len(matched)} rows -> {m_out}")
         logging.info(f"Saved inputted TTPs -> {t_out}")
