@@ -882,7 +882,14 @@ def _autobuild_needed() -> bool:
     if _needs_training(BEST_MODEL_DIR):
         return True
     return False
+from werkzeug.serving import WSGIRequestHandler
 
+class QuietHandler(WSGIRequestHandler):
+    def log_request(self, *args, **kwargs):
+        # skip logging just for /status
+        if getattr(self, "path", "") == "/status":
+            return
+        return super().log_request(*args, **kwargs)
 # ============================================
 # Index & Workflow
 #index, workflow, roberta, submit_both, predict with module, predict api, match, export
@@ -1137,4 +1144,4 @@ def export():
 
 
 if __name__ == '__main__':
-    app.run(debug=False, threaded=True)
+    app.run(debug=False, threaded=True,request_handler=QuietHandler)

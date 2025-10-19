@@ -36,39 +36,27 @@ ICT3214-SEC-ANALYTICS/
 │     ├──► raw/
 │           ├──► attack_stix/ - contains enterprise-attack from MITRE
 │           ├──► pdfs/ - contains APTnotes PDF files
-│     ├──► excel/ - contains extracted enterprise-attack MITRE ATT&CK & mitigation techniques
-│     ├──► extracted_pdfs/ - contains extracted information from data/raw/pdfs. This will be generated when app.py is run
+│           ├──► excel/ - contains extracted enterprise-attack MITRE ATT&CK & mitigation techniques
 │     ├──► mapped/ - contains the pdfs with successful correlation of IOCs and ATT&CK techniques
-│     ├──► processed/ 
-│              ├──► rules/ - Regex based auto generated ATT&CK matching rules
-│              ├──► extracted_iocs.csv - Stores extracted Indicators of Compromise (IOCs) such as domains, IPs, URLs, hashes, and emails parsed from APTnotes PDFs for later threat group mapping.
-│              ├──► ti_groups_techniques.csv - Mapping of MITRE ATT&CK Intrusion Sets (Groups) to the Techniques/sub-techniques they use
 ├──► src/
-│     ├──► data/ - contains scripts to create .csv in data/ folders 
+│     ├──► scripts/ - contains scripts to extract files, create datasets or map techniques to threat groups 
 │     ├──► models/ - contains latest and best RoBERTa model as well as scripts to train and predict
-│     ├──► paths/ - contains script that has static variables used by other scripts that is related to path locations 
 ├──► templates/
 │       ├──► common/ - contains html that are used by all other pages
-│       ├──► cleaned_report_template.docx - report template used by OpenAI to generate the adversary attribution report
 │       ├──► index.html - Serves as the main landing page and user interface for the Flask-based MITRE ATT&CK Threat Attribution system. 
 │       ├──► error.html - Error page rendered when invalid input, missing files, or API-related exceptions occur during app execution.
 │       ├──► results.html - Displays the dual-output comparison between the rule-based and RoBERTa-based threat attribution flows.  
-│       ├──► results.html -  Displays **LLM-assisted adversary attribution results** for both **rule-based matching pipeline** and the **machine learning (RoBERTa)**
-│      
-├──► matching.py - Validates and normalizes user-entered MITRE ATT&CK TTPs and performs correlation to identify matching threat groups based on exact and root-technique overlaps; outputs ranked matches and input TTP lists for downstream analysis and report generation.
-├──► mitigations.py - HELP
-├──► report_generation.py - script to generate report using OpenAI and the results of RoBERTa, Matching and Mitigations
-├──► technique_labels.py - HELP
 ├──► requirements.txt - list of dependencies that need to be installed via "pip install -r requirements"
+├──► project_paths.py - script that has static variables used by other scripts that is related to path locations 
 ```
 ---
 
 ## Workflow Overview
 
 ```
-APTnotes PDFs
+src/scripts
 │
-├──► extract_pdfs.py → Extracts IOCs & TTPs from APTnotes PDF reports
+├──► extract_pdfs.py → Extracts IOCs & TTPs from APTnotes PDF reports 
 │
 ├──► build_dataset.py → Creates labeled dataset for the RoBERTa model
 │
@@ -79,6 +67,8 @@ APTnotes PDFs
 ├──► matching.py → Matches input TTPs using both rule-based and RoBERTa inference modes
 │
 ├──► mitigations.py → Retrieves defensive mitigations corresponding to the TTPs associated with matched groups
+│
+├──► technique_labels.py - HELP
 │
 └──► report_generator.py → Generates GenAI-based structured intelligence reports summarizing group matches, mitigations, and analyst insights
 ```
