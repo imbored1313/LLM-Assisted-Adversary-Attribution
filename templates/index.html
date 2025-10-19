@@ -47,6 +47,55 @@
           <button type="submit">Submit</button>
           <button type="button" id="clear-btn" style="background-color: #6c757d;">Clear</button>
         </form>
+        <div id="build-controls" style="margin:1rem 0;">
+          <button id="btn-start">Build / Resume</button>
+          <button id="btn-force">Force Rebuild</button>
+          <span id="build-msg" style="margin-left:10px; font-style:italic;"></span>
+        </div>
+
+        <div style="height:10px; background:#eee; border-radius:6px; overflow:hidden;">
+          <div id="bar" style="height:10px; width:0%; background:#4caf50;"></div>
+        </div>
+
+        <ul id="steps" style="list-style:none; padding-left:0; margin-top:10px;"></ul>
+
+        <script>
+        async function poll() {
+          const r = await fetch('/status');
+          const s = await r.json();
+
+          // progress bar
+          document.getElementById('bar').style.width = (s.pct || 0) + '%';
+
+          // steps list
+          const ul = document.getElementById('steps');
+          ul.innerHTML = '';
+          (s.steps || []).forEach(step => {
+            const li = document.createElement('li');
+            li.textContent = `• ${step.name} — ${step.state}${step.msg ? ' — ' + step.msg : ''}`;
+            ul.appendChild(li);
+          });
+
+          // message
+          document.getElementById('build-msg').textContent = s.msg || (s.running ? 'Working…' : 'Idle');
+        }
+
+        async function startBuild(force=false) {
+          const fd = new FormData();
+          fd.append('force', force ? '1' : '0');
+          const r = await fetch('/build', {method:'POST', body:fd});
+          const j = await r.json();
+          document.getElementById('build-msg').textContent = j.msg || (j.ok ? 'Started.' : 'Error');
+          poll(); // refresh immediately
+        }
+
+        document.getElementById('btn-start').addEventListener('click', () => startBuild(false));
+        document.getElementById('btn-force').addEventListener('click', () => startBuild(true));
+
+        // kick off polling loop
+        poll();
+        setInterval(poll, 1500);
+        </script>
       </article>
     </div>
 <script>

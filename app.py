@@ -11,6 +11,8 @@ from pathlib import Path
 import subprocess, sys
 import os, tempfile
 import json
+from threading import Thread, Lock
+import time
 # =======================================================
 # Project-relative paths
 # =======================================================
@@ -24,7 +26,7 @@ from project_paths import (
     TRAIN_ROBERTA_SCRIPT,PREDICT_SCRIPT,BEST_MODEL_DIR,
     MAPPING_CSV,MITIGATIONS_CSV,EXCEL_ATTACK_TECHS,
     EXTRACTED_IOCS_CSV,TI_GROUPS_TECHS_CSV,DATASET_CSV,LABELS_TXT,GROUP_TTPS_DETAIL_CSV,RANKED_GROUPS_CSV,
-    output_dir_for_folds, project_path,ensure_dir_tree,add_src_to_syspath
+     project_path,ensure_dir_tree,add_src_to_syspath
 )
 app = Flask(__name__)
 sys.path.insert(0, str(SRC_ROOT))  
@@ -551,95 +553,174 @@ def _run_roberta_flow(ttps: list[str]) -> dict:
         "doc_path": out_path,
     }
 
+# ---------------- Progress state ----------------
+PROG = {
+    "running": False,
+    "pct": 0,
+    "steps": [],   # list of {"name": str, "state": "pending|running|done|skip|error", "msg": str}
+    "msg": "",
+}
+_lock = Lock()
+
+def _init_progress(step_names):
+    with _lock:
+        PROG["running"] = True
+        PROG["pct"] = 0
+        PROG["msg"] = "Starting…"
+        PROG["steps"] = [{"name": n, "state": "pending", "msg": ""} for n in step_names]
+
+def _set_step_state(i, state, msg=""):
+    with _lock:
+        PROG["steps"][i]["state"] = state
+        PROG["steps"][i]["msg"] = msg
+        done = sum(1 for s in PROG["steps"] if s["state"] in ("done", "skip"))
+        total = len(PROG["steps"]) or 1
+        PROG["pct"] = int(100 * done / total)
+        PROG["msg"] = msg or PROG["msg"]
+
+def _finish_progress():
+    with _lock:
+        PROG["running"] = False
+        if PROG["pct"] < 100:
+            # leave partial percentage on error
+            pass
+# --- Progress helpers (keep your PROG/_init_progress/_set_step_state/_finish_progress) ---
+
+def _step_index(step_name: str) -> int:
+    return next(i for i, s in enumerate(PROG["steps"]) if s["name"] == step_name)
+
+# Display names used in the UI + bound to the step functions below
+STEP_NAMES = {
+    "extract":   "Extract PDFs → IOC CSV",
+    "enterprise":"Build enterprise ATT&CK tables",
+    "map":       "Map IOCs → ATT&CK",
+    "dataset":   "Build dataset & labels",
+    "mitigate":  "Build mitigations",
+    "train":     "Train RoBERTa (if missing)",
+}
+
 # =======================================================
 # Pipeline steps (extract pdf → extract stix → build → train)
 # =======================================================
-def step_extract_pdfs(in_dir: Path = PDFS_DIR, out_dir: Path = EXTRACTED_PDFS_DIR):
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_csv = EXTRACTED_IOCS_CSV
-
-    # Treat the extractor script and input folder as inputs
-    inputs = [EXTRACT_SCRIPT] + list(in_dir.glob("*.pdf"))
-    if not needs_run([out_csv], inputs=inputs):
-        print(f"[SKIP] extract_pdfs.py — up to date: {out_csv}")
-        return
-
-    run([sys.executable, str(EXTRACT_SCRIPT), "--in", str(in_dir), "--out", str(out_dir)])
-
-def step_map_iocs_to_attack():
-    outputs = [GROUP_TTPS_DETAIL_CSV, RANKED_GROUPS_CSV]
-    inputs  = [MAP_IOCS_SCRIPT]
-    if not needs_run(outputs, inputs=inputs):
-        print(f"[SKIP] map_iocs_to_attack.py — up to date: {EXTRACTED_IOCS_CSV}")
-        return
-    run([sys.executable, str(MAP_IOCS_SCRIPT)])
-
 def step_enterprise_attack():
+    name = STEP_NAMES["enterprise"]
+    i = _step_index(name)
+    _set_step_state(i, "running", "Building enterprise ATT&CK lookup tables…")
+
     outputs = [TI_GROUPS_TECHS_CSV]
-    inputs  = [ATTACK_SCRIPT]  # add STIX source dirs/files if you have them
+    inputs  = [ATTACK_SCRIPT]  # add STIX sources if you’ve got them
     if not needs_run(outputs, inputs=inputs):
-        print(f"[SKIP] enterprise_attack.py — up to date: {TI_GROUPS_TECHS_CSV}")
+        _set_step_state(i, "skip", f"Up to date: {TI_GROUPS_TECHS_CSV.name}")
         return
+
     run([sys.executable, str(ATTACK_SCRIPT)])
+    if not TI_GROUPS_TECHS_CSV.exists():
+        _set_step_state(i, "error", f"Missing: {TI_GROUPS_TECHS_CSV}")
+        raise FileNotFoundError(f"Expected {TI_GROUPS_TECHS_CSV}")
+    _set_step_state(i, "done", "ATT&CK tables ready.")
+
+
+def step_extract_pdfs():
+    name = STEP_NAMES["extract"]
+    i = _step_index(name)
+    _set_step_state(i, "running", "Extracting IOCs from PDFs…")
+
+    out_csv = EXTRACTED_IOCS_CSV
+    inputs = [EXTRACT_SCRIPT] + list(PDFS_DIR.glob("*.pdf"))
+    if not needs_run([out_csv], inputs=inputs):
+        _set_step_state(i, "skip", f"Up to date: {out_csv.name}")
+        return
+
+    run([sys.executable, str(EXTRACT_SCRIPT), "--in", str(PDFS_DIR), "--out", str(EXTRACTED_PDFS_DIR)])
+    if not out_csv.exists():
+        _set_step_state(i, "error", f"Missing: {out_csv}")
+        raise FileNotFoundError(f"Expected {out_csv}")
+    _set_step_state(i, "done", "IOC CSV generated.")
+
+
+def step_map_iocs_to_attack(force: bool = False):
+    name = STEP_NAMES["map"]
+    i = _step_index(name)
+    _set_step_state(i, "running", "Mapping IOCs to ATT&CK…")
+
+    outputs = [RANKED_GROUPS_CSV, GROUP_TTPS_DETAIL_CSV]
+    inputs  = [MAP_IOCS_SCRIPT, EXTRACTED_IOCS_CSV, TI_GROUPS_TECHS_CSV]
+    if not needs_run(outputs, inputs=inputs) and not force:
+        _set_step_state(i, "skip", f"Up to date: {RANKED_GROUPS_CSV.name}, {GROUP_TTPS_DETAIL_CSV.name}")
+        return
+
+    run([sys.executable, str(MAP_IOCS_SCRIPT)], cwd=str(PROJECT_ROOT))
+    for out in outputs:
+        if not out.exists():
+            _set_step_state(i, "error", f"Missing: {out}")
+            raise FileNotFoundError(f"Expected {out}")
+    _set_step_state(i, "done", "Mappings updated.")
 
 
 def step_build_dataset():
+    name = STEP_NAMES["dataset"]
+    i = _step_index(name)
+    _set_step_state(i, "running", "Building dataset & labels…")
+
     outputs = [DATASET_CSV, LABELS_TXT]
     inputs  = [BUILD_DATASET_SCRIPT, EXTRACTED_IOCS_CSV, TI_GROUPS_TECHS_CSV]
     if not needs_run(outputs, inputs=inputs):
-        print(f"[SKIP] build_dataset.py — up to date: {DATASET_CSV}, {LABELS_TXT}")
+        _set_step_state(i, "skip", f"Up to date: {DATASET_CSV.name}, {LABELS_TXT.name}")
         return
+
     run([sys.executable, str(BUILD_DATASET_SCRIPT)])
+    if not DATASET_CSV.exists() or not LABELS_TXT.exists():
+        _set_step_state(i, "error", "dataset.csv / labels.txt missing.")
+        raise FileNotFoundError("Missing dataset.csv or labels.txt")
+    _set_step_state(i, "done", "dataset.csv & labels.txt ready.")
+
 
 def step_mitigations(force: bool = False):
-    """
-    Generate mitigations CSV (Data/mitigations/mitigations.csv).
-    Runs mitigations.py if inputs changed or file missing.
-    """
+    name = STEP_NAMES["mitigate"]
+    i = _step_index(name)
+    _set_step_state(i, "running", "Building mitigations…")
+
     out_csv = MITIGATIONS_CSV
-    if not needs_run([out_csv], inputs=[MITIGATIONS_SCRIPT, GROUP_TTPS_DETAIL_CSV, MAPPING_CSV, EXCEL_ATTACK_TECHS]) and not force:
-        print(f"[SKIP] mitigations.py — up to date: {out_csv}")
+    inputs  = [MITIGATIONS_SCRIPT, GROUP_TTPS_DETAIL_CSV, MAPPING_CSV, EXCEL_ATTACK_TECHS]
+    if not needs_run([out_csv], inputs=inputs) and not force:
+        _set_step_state(i, "skip", f"Up to date: {out_csv.name}")
         return
 
-    print(f"[RUN] mitigations.py — generating: {out_csv}")
     res = subprocess.run([sys.executable, str(MITIGATIONS_SCRIPT)], cwd=str(PROJECT_ROOT))
     if res.returncode != 0:
-        raise RuntimeError(f"mitigations.py failed with exit code {res.returncode}")
+        _set_step_state(i, "error", "mitigations.py failed.")
+        raise RuntimeError(f"mitigations.py exited {res.returncode}")
     if not out_csv.exists():
-        raise FileNotFoundError(f"Expected mitigations CSV not found at: {out_csv}")
-    print(f"[OK] mitigations.csv generated: {out_csv}")
+        _set_step_state(i, "error", f"Missing: {out_csv}")
+        raise FileNotFoundError(f"Expected {out_csv}")
+    _set_step_state(i, "done", "mitigations.csv ready.")
 
-def step_map_iocs_to_attack(force: bool = False):
-    """
-    Run map_iocs_to_attack.py to produce:
-      - ranked_groups.csv
-      - group_ttps_detail.csv
-    """
-    outputs = [RANKED_GROUPS_CSV, GROUP_TTPS_DETAIL_CSV]
-    inputs = [MAP_IOCS_SCRIPT, EXTRACTED_IOCS_CSV, TI_GROUPS_TECHS_CSV]
-    if not needs_run(outputs, inputs=inputs) and not force:
-        print(f"[SKIP] map_iocs_to_attack.py — up to date: {RANKED_GROUPS_CSV}, {GROUP_TTPS_DETAIL_CSV}")
+
+def step_train_roberta_if_needed():
+    name = STEP_NAMES["train"]
+    i = _step_index(name)
+    _set_step_state(i, "running", "Checking/Training RoBERTa…")
+
+    if not _needs_training(BEST_MODEL_DIR):
+        _set_step_state(i, "skip", f"Usable model found in {BEST_MODEL_DIR.name}.")
         return
 
-    print(f"[RUN] map_iocs_to_attack.py — generating IOC→ATT&CK mappings…")
-    res = subprocess.run([sys.executable, str(MAP_IOCS_SCRIPT)], cwd=str(PROJECT_ROOT))
+    # sanity check dataset before training
+    assert_dataset_ready()
+    res = subprocess.run([sys.executable, str(TRAIN_ROBERTA_SCRIPT)], cwd=str(PROJECT_ROOT))
     if res.returncode != 0:
-        raise RuntimeError(f"map_iocs_to_attack.py failed with exit code {res.returncode}")
+        _set_step_state(i, "error", "train_roberta.py failed.")
+        raise RuntimeError(f"train_roberta.py exited {res.returncode}")
 
-    for out in outputs:
-        if not out.exists():
-            raise FileNotFoundError(f"Expected output missing: {out}")
+    if _needs_training(BEST_MODEL_DIR):
+        _set_step_state(i, "error", "Best model artifacts still incomplete.")
+        raise RuntimeError("Best model missing after training.")
+    _set_step_state(i, "done", "Best model ready.")
 
-    print(f"[OK] Generated: {RANKED_GROUPS_CSV.name}, {GROUP_TTPS_DETAIL_CSV.name}")
 
 def _is_empty_dir(p: Path) -> bool:
     return (not p.exists()) or (next(p.iterdir(), None) is None)
 
-def step_train_roberta():
-    if not _is_empty_dir(BEST_MODEL_DIR):
-        print(f"[SKIP] train_roberta.py — best model exists in {BEST_MODEL_DIR}")
-        return
-    run([sys.executable, str(TRAIN_ROBERTA_SCRIPT)])
 
 def assert_dataset_ready():
     required = {"id", "text", "labels"}  # weight is optional
@@ -687,33 +768,86 @@ def _needs_training(model_dir: Path) -> bool:
         return True
     return False
 
-def ensure_best_model():
-    """
-    Train RoBERTa if MODELS_ROOT/best_roberta_for_predict is missing or empty
-    or obviously lacks model artifacts.
-    """
-    if _needs_training(BEST_MODEL_DIR):
-        print(f"[INFO] No usable model in {BEST_MODEL_DIR}; training now…")
-        assert_dataset_ready()   # optional guard from my previous message
-        step_train_roberta()
-    else:
-        print(f"[OK] Found a usable model in {BEST_MODEL_DIR}; skipping training.")
 
-def build_everything(force_map=False, force_mitigations=False, train_if_missing=True):
+def ensure_prereqs():
+    ensure_dir_tree()
+    add_src_to_syspath()
+
+    if not PDFS_DIR.exists():
+        raise FileNotFoundError(f"PDFS_DIR does not exist: {PDFS_DIR}")
+    if not any(PDFS_DIR.glob("*.pdf")):
+        print("[WARN] No PDFs in PDFS_DIR — pipeline can run, outputs may be sparse.")
+
+    for p in [EXTRACT_SCRIPT, ATTACK_SCRIPT, MAP_IOCS_SCRIPT, BUILD_DATASET_SCRIPT]:
+        if not Path(p).exists():
+            raise FileNotFoundError(f"Missing script: {p}")
+
+def build_everything(*, force_map=False, force_mitigations=False, train_if_missing=True):
     ensure_prereqs()
     step_enterprise_attack()
     step_extract_pdfs()
     step_map_iocs_to_attack(force=force_map)
     step_build_dataset()
     step_mitigations(force=force_mitigations)
-
     if train_if_missing:
-        ensure_best_model()
+        step_train_roberta_if_needed()
+
+# ---------------- Pipeline thread ----------------
+def _pipeline(force=False):
+    steps = [
+        STEP_NAMES["extract"],
+        STEP_NAMES["enterprise"],
+        STEP_NAMES["map"],
+        STEP_NAMES["dataset"],
+        STEP_NAMES["mitigate"],
+        STEP_NAMES["train"],   # include or remove if you don’t want training on first run
+    ]
+    _init_progress(steps)
+
+    try:
+        if force:
+            # Make outputs stale so needs_run() triggers real rebuild
+            for p in (EXTRACTED_IOCS_CSV, GROUP_TTPS_DETAIL_CSV, RANKED_GROUPS_CSV,
+                      DATASET_CSV, LABELS_TXT, MITIGATIONS_CSV):
+                try:
+                    p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+        # If you don’t want training on first run, set train_if_missing=False here
+        build_everything(force_map=force, force_mitigations=force, train_if_missing=True)
+
+    except Exception as e:
+        with _lock:
+            for s in PROG["steps"]:
+                if s["state"] == "running":
+                    s["state"] = "error"
+                    s["msg"] = f"Error: {e}"
+            PROG["msg"] = f"Pipeline failed: {e}"
+    finally:
+        _finish_progress()
+
 
 # ============================================
 # Index & Workflow
 #index, workflow, roberta, submit_both, predict with module, predict api, match, export
 # ============================================
+@app.get("/status")
+def status():
+    with _lock:
+        return jsonify(PROG)
+
+@app.post("/build")
+def build():
+    force = request.form.get("force") == "1"
+    with _lock:
+        if PROG["running"]:
+            return jsonify({"ok": False, "msg": "Pipeline already running."}), 409
+        # kick thread
+        t = Thread(target=_pipeline, kwargs={"force": force}, daemon=True)
+        t.start()
+    return jsonify({"ok": True, "msg": "Started."})
+
 @app.route('/')
 def index():
     ensure_dir_tree()
@@ -740,17 +874,10 @@ def index():
             root_label = id_to_label.get(root, root)
             subs = [lbl for _, lbl in sorted(ttp_dict[root], key=lambda x: x[0])]
             grouped_ttps.append((root_label, subs))
-        build_everything()
         return render_template('index.html', grouped_ttps=grouped_ttps)
 
     except Exception as e:
         return render_template('error.html', error=str(e))
-# =======================================================
-# WORKFLOW ROUTE
-# =======================================================
-@app.route('/workflow')
-def workflow():
-    return render_template('workflow.html')
 # =======================================================
 # ROBERTA ROUTE 
 # =======================================================

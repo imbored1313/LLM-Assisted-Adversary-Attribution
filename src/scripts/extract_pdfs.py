@@ -25,7 +25,7 @@ from project_paths import (
     TRAIN_ROBERTA_SCRIPT,PREDICT_SCRIPT,BEST_MODEL_DIR,
     MAPPING_CSV,MITIGATIONS_CSV,EXCEL_ATTACK_TECHS,
     EXTRACTED_IOCS_CSV,TI_GROUPS_TECHS_CSV,DATASET_CSV,LABELS_TXT,GROUP_TTPS_DETAIL_CSV,RANKED_GROUPS_CSV,
-    output_dir_for_folds, project_path,ensure_dir_tree,add_src_to_syspath
+     project_path,ensure_dir_tree,add_src_to_syspath
 )
 
 

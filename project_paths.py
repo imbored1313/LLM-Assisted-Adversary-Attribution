@@ -75,8 +75,7 @@ MAPPING_CSV           = PROCESSED_DIR / "techniques_mapping.csv"
 MITIGATIONS_CSV       = MITIGATIONS_DIR / "mitigations.csv"
 EXCEL_ATTACK_TECHS    = EXCEL_DIR / "enterprise-attack-v17.1-techniques.xlsx"
 
-def output_dir_for_folds(n_folds: int, model_slug: str = "roberta_base"):
-    return EXPERIMENTS_ROOT / f"{n_folds}foldruns" / model_slug
+
 # Convenience
 def project_path(*parts: str) -> Path:
     return PROJECT_ROOT.joinpath(*parts)

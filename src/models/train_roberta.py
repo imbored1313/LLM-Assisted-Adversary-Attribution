@@ -1,3 +1,6 @@
+
+
+
 #!/usr/bin/env python3
 """
 train_roberta.py — zero-CLI version with baked-in config (just run: python train_roberta.py)
@@ -7,7 +10,6 @@ Dataset CSV schema (required columns): id, text, labels, split
 - split: one of train / val / test (case-insensitive; script respects your splits)
 
 """
-#######TO FIX THE FOLDS
 
 from __future__ import annotations
 import csv
@@ -22,9 +24,8 @@ from torch.utils.data import Dataset
 import numpy as np
 import torch
 import shutil
-import torch.nn.functional as F
-from typing import Iterable
-
+import sys
+from pathlib import Path
 from transformers import (
     AutoTokenizer,
     AutoConfig,
@@ -33,9 +34,6 @@ from transformers import (
     Trainer,
     TrainingArguments,
 )
-from pathlib import Path
-import sys, subprocess
-
 ROOT = Path(__file__).resolve().parents[2]  # repo root
 sys.path.insert(0, str(ROOT))
 from project_paths import (
@@ -48,8 +46,10 @@ from project_paths import (
     TRAIN_ROBERTA_SCRIPT,PREDICT_SCRIPT,BEST_MODEL_DIR,
     MAPPING_CSV,MITIGATIONS_CSV,EXCEL_ATTACK_TECHS,
     EXTRACTED_IOCS_CSV,TI_GROUPS_TECHS_CSV,DATASET_CSV,LABELS_TXT,GROUP_TTPS_DETAIL_CSV,RANKED_GROUPS_CSV,
-    output_dir_for_folds, project_path,ensure_dir_tree,add_src_to_syspath
+     project_path,ensure_dir_tree,add_src_to_syspath
 )
+
+
 # EarlyStopping is optional; present on most recent transformers
 try:
     from transformers import EarlyStoppingCallback  # type: ignore
@@ -59,12 +59,15 @@ except Exception:
     HAS_EARLY_STOP = False
 
 
+def output_dir_for_folds(n_folds: int, model_slug: str = "roberta_base"):
+    return EXPERIMENTS_ROOT / f"{n_folds}foldruns" / model_slug
 # =====================================================================
 #                         EDIT ME
 # =====================================================================
 
 @dataclass
 class Config:      
+    PREDICT_GROUPS_ONLY: bool = False
     MODEL_NAME: str = "roberta-base"  # e.g., "roberta-base", "roberta-large", "microsoft/deberta-v3-base", local path, etc.
 
     # --- Training hyperparams ---
@@ -97,17 +100,14 @@ class Config:
     USE_KFOLD: bool = True     # <- disable k-fold when using random split
     USE_RANDOM_SPLIT: bool = True
     SPLIT_RATIOS: tuple[float, float, float] = (0.8, 0.1, 0.1)
-    N_FOLDS: int = 5               # 5-fold by default
+    N_FOLDS: int = 0               # 5-fold by default
     SHUFFLE_POOL: bool = True      # Shuffle train+val pool before folding
 
     OUTPUT_DIR = output_dir_for_folds(N_FOLDS, model_slug="roberta_base_v1")
-    CSV_PATH   = DATASET_CSV
-    LABELS_PATH = LABELS_TXT
+    CSV_PATH   = PROCESSED_DIR / "dataset.csv"
+    LABELS_PATH = PROCESSED_DIR / "labels.txt"
 
 
-    # ensure dirs exist
-    for d in [DATA_ROOT, PROCESSED_DIR, MODELS_ROOT, OUTPUT_DIR,]:
-        d.mkdir(parents=True, exist_ok=True)
 
 CFG = Config()
 
@@ -130,40 +130,66 @@ def scan_split_counts(csv_path: pathlib.Path) -> Dict[str, int]:
     print(f"[INFO] Split counts: train={counts['train']}  val={counts['val']}  test={counts['test']}")
     return counts
 
-def read_labels_from_csv(csv_path: pathlib.Path) -> List[str]:
+def read_labels_from_csv(csv_path: pathlib.Path, groups_only: bool, tech2groups: dict[str, set[str]]) -> List[str]:
     uniq = set()
     with csv_path.open("r", encoding="utf-8") as f:
         for r in csv.DictReader(f):
             labs = (r.get("labels") or "").strip()
             if not labs:
                 continue
-            for x in labs.split("|"):
-                x = x.strip()
-                if x:
-                    uniq.add(x)
-    # keep a stable order: techniques first, then groups/others
-    tech = sorted([x for x in uniq if x.startswith("T")])
-    grp  = sorted([x for x in uniq if not x.startswith("T")])
-    return tech + grp
+            if groups_only:
+                # expand techniques -> groups; keep any groups already present
+                row_groups = set()
+                for x in labs.split("|"):
+                    x = x.strip()
+                    if not x:
+                        continue
+                    if x.startswith("T"):
+                        # use exact T#### or T####.### first; if nothing, also try root T####
+                        if x in tech2groups:
+                            row_groups |= tech2groups[x]
+                        else:
+                            root = x.split(".", 1)[0]
+                            row_groups |= tech2groups.get(root, set())
+                    else:
+                        row_groups.add(x)
+                uniq |= {g for g in row_groups if g}
+            else:
+                for x in labs.split("|"):
+                    x = x.strip()
+                    if x:
+                        uniq.add(x)
 
-def ensure_labels_file(labels_path: pathlib.Path, csv_path: pathlib.Path) -> List[str]:
+    if groups_only:
+        labels = sorted(uniq)  # groups only
+    else:
+        tech = sorted([x for x in uniq if x.startswith("T")])
+        grp  = sorted([x for x in uniq if not x.startswith("T")])
+        labels = tech + grp
+    return labels
+
+def ensure_labels_file(labels_path: pathlib.Path, csv_path: pathlib.Path, groups_only: bool, tech2groups: dict[str, set[str]]) -> List[str]:
     if not labels_path.exists():
-        labels = read_labels_from_csv(csv_path)
+        labels = read_labels_from_csv(csv_path, groups_only=groups_only, tech2groups=tech2groups)
         labels_path.write_text("\n".join(labels) + "\n", encoding="utf-8")
         return labels
     return [l.strip() for l in labels_path.read_text(encoding="utf-8").splitlines() if l.strip()]
 
-def run_output_dir(k: int, model_slug: str = "roberta_base_v1") -> Path:
-    """
-    All intermediate runs live under EXPERIMENTS_ROOT.
-    Example: <EXPERIMENTS_ROOT>/0foldruns/roberta_base_v1
-             <EXPERIMENTS_ROOT>/5foldruns/roberta_base_v1
-    """
-    name = f"{k}foldruns/{model_slug}" if k >= 2 else f"0foldruns/{model_slug}"
-    d = EXPERIMENTS_ROOT / name
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
+def load_tech_to_groups_map(csv_path: pathlib.Path) -> dict[str, set[str]]:
+    m: dict[str, set[str]] = {}
+    path = csv_path
+    if not path.exists():
+        print(f"[WARN] Missing technique→group map at {path}. Groups-only mapping will be empty.")
+        return m
+    with path.open("r", encoding="utf-8") as f:
+        r = csv.DictReader(f)
+        for row in r:
+            tid = (row.get("technique_id") or "").strip()
+            g   = (row.get("group_name") or "").strip()
+            if not tid or not g:
+                continue
+            m.setdefault(tid, set()).add(g)
+    return m
 
 def print_run_banner(labels: List[str], cfg: Config, out_dir: pathlib.Path):
     # Console banner with folds + hyperparameters
@@ -206,37 +232,11 @@ def compute_output_dir(cfg: Config) -> pathlib.Path:
         return pathlib.Path(f"{cfg.N_FOLDS}foldruns/roberta")
     return cfg.OUTPUT_DIR
 
-def prune_experiments(exp_root: Path, keep_names=("metrics.json", "README.txt")):
-    """
-    In EXPERIMENTS_ROOT, remove everything except metrics.json & README.txt
-    for each run directory. Also removes now-empty subfolders.
-    """
-    if not exp_root.exists():
-        return
-
-    # 1) Delete all files that are not in keep_names
-    for p in exp_root.rglob("*"):
-        try:
-            if p.is_file() and p.name not in keep_names:
-                p.unlink()
-        except Exception as e:
-            print(f"[WARN] Failed to delete {p}: {e}")
-
-    # 2) Remove empty directories bottom-up (but keep run dirs that still
-    #    contain the kept files)
-    for d in sorted([d for d in exp_root.rglob("*") if d.is_dir()], key=lambda x: len(str(x)), reverse=True):
-        try:
-            # If directory is empty now, remove it
-            next(d.iterdir())
-        except StopIteration:
-            try:
-                d.rmdir()
-            except Exception as e:
-                print(f"[WARN] Failed to remove empty dir {d}: {e}")
 
 class MultiLabelCSVDataset(Dataset):
     """
     CSV-backed multi-label dataset.
+    - If groups_only=True, technique labels (Txxxx / Txxxx.xxx) are expanded to groups via tech2groups.
     """
     def __init__(
         self,
@@ -245,12 +245,34 @@ class MultiLabelCSVDataset(Dataset):
         tokenizer,
         label2id: Dict[str, int],
         max_len: int = 256,
-        index_subset: Optional[List[int]] = None
+        index_subset: Optional[List[int]] = None,
+        groups_only: bool = False,
+        tech2groups: Optional[Dict[str, Set[str]]] = None,
     ):
         self.tokenizer = tokenizer
         self.max_len = int(max_len)
         self.label2id = dict(label2id)
+        self.groups_only = bool(groups_only)
+        self.tech2groups = tech2groups or {}
         self.records: List[Tuple[str, np.ndarray]] = []
+
+        def expand_to_groups(labels_str: str) -> List[str]:
+            """Map technique labels to groups using tech2groups; pass group labels through."""
+            labs_out: Set[str] = set()
+            for l in (labels_str or "").split("|"):
+                l = (l or "").strip()
+                if not l:
+                    continue
+                if l.startswith("T"):
+                    # exact technique first; fallback to root (e.g., T1059 from T1059.001)
+                    if l in self.tech2groups:
+                        labs_out |= self.tech2groups[l]
+                    else:
+                        root = l.split(".", 1)[0]
+                        labs_out |= self.tech2groups.get(root, set())
+                else:
+                    labs_out.add(l)
+            return sorted(labs_out)
 
         # ---- load rows and build records ----
         import csv, pathlib
@@ -260,14 +282,17 @@ class MultiLabelCSVDataset(Dataset):
         def add_row(r):
             text = (r.get("text") or "").strip()
             labs = (r.get("labels") or "").strip()
-            w = float(r.get("weight") or 1.0)    
-            effective_labels = [x.strip() for x in labs.split("|") if x.strip()]
+
+            if self.groups_only:
+                effective_labels = expand_to_groups(labs)
+            else:
+                effective_labels = [x.strip() for x in labs.split("|") if x.strip()]
 
             y = np.zeros(len(self.label2id), dtype=np.float32)
             for l in effective_labels:
                 if l in self.label2id:
                     y[self.label2id[l]] = 1.0
-            self.records.append((text, y, w))
+            self.records.append((text, y))
 
         if index_subset is not None:
             for i in list(index_subset):
@@ -288,10 +313,14 @@ class MultiLabelCSVDataset(Dataset):
         return self._length
 
     def __getitem__(self, idx: int):
-        text, y, w = self.records[idx]
-        enc = self.tokenizer(text, truncation=True, max_length=self.max_len, padding=False)
+        text, y = self.records[idx]
+        enc = self.tokenizer(
+            text,
+            truncation=True,
+            max_length=self.max_len,
+            padding=False,
+        )
         enc["labels"] = y
-        enc["sample_weight"] = np.float32(w) 
         return enc
 
 # --- Multi-label metrics ---
@@ -403,85 +432,25 @@ def maybe_early_stopping(use_eval_in_training: bool, cfg: Config, targs: Trainin
                                       early_stopping_threshold=0.0)]
     except Exception:
         return None
-    
-
-def run(cmd: list[str], cwd: Path | None = None) -> None:
-    print(f"\n$ {' '.join(map(str, cmd))}")
-    res = subprocess.run(cmd, cwd=str(cwd) if cwd else None)
-    if res.returncode != 0:
-        raise SystemExit(res.returncode)
-
-def needs_run(outputs: Iterable[Path], inputs: Iterable[Path] = ()) -> bool:
-    outs = list(outputs)
-    if not outs or any(not p.exists() for p in outs):
-        return True  # missing outputs => run
-
-    # If any input (or the script itself) is newer than any output => run
-    out_mtime = min(p.stat().st_mtime for p in outs)
-    ins = [p for p in inputs if p is not None and Path(p).exists()]
-    if not ins:
-        return False
-    return max(Path(p).stat().st_mtime for p in ins) > out_mtime
-
-def step_build_dataset():
-    outputs = [DATASET_CSV, LABELS_TXT]
-    inputs  = [BUILD_DATASET_SCRIPT, EXTRACTED_IOCS_CSV, TI_GROUPS_TECHS_CSV]
-    if not needs_run(outputs, inputs=inputs):
-        print(f"[SKIP] build_dataset.py — up to date: {DATASET_CSV}, {LABELS_TXT}")
-        return
-    run([sys.executable, str(BUILD_DATASET_SCRIPT)])
-
-def finalize_and_cleanup(best_src_dir: Path | None, best_dir: Path, experiments_root: Path):
-    """
-    Copy the best run into BEST_DIR, then remove EXPERIMENTS_ROOT entirely.
-    Safe to call even if best_src_dir is None.
-    """
-    if best_src_dir is None:
-        print("[WARN] No best run produced; skipping export to BEST_DIR.")
-    else:
-        # Fresh BEST_DIR
-        try:
-            if best_dir.exists():
-                shutil.rmtree(best_dir)
-        except Exception as e:
-            print(f"[WARN] Could not remove existing BEST_DIR {best_dir}: {e}")
-        try:
-            shutil.copytree(best_src_dir, best_dir)
-            print(f"[OK] Exported best model from {best_src_dir} → {best_dir}")
-        except Exception as e:
-            print(f"[ERROR] Failed to copy best model to {best_dir}: {e}")
-
-    # Try to delete the entire experiments folder
-    try:
-        if experiments_root.exists():
-            shutil.rmtree(experiments_root)
-            print(f"[OK] Deleted experiments folder: {experiments_root}")
-    except Exception as e:
-        print(f"[WARN] Failed to delete experiments folder {experiments_root}: {e}")
 
 def main():
-    ensure_dir_tree()
-    step_build_dataset()
     cfg = CFG
     set_seed(cfg.SEED)
 
+    # --- Load CSV stats and technique->groups map (once) ---
+    # counts = scan_split_counts(cfg.CSV_PATH)
+    tech2groups_path = PROCESSED_DIR / "ti_groups_techniques.csv"
+    tech2groups = load_tech_to_groups_map(tech2groups_path)
+
     # --- Build/Load labels (once) ---
-    labels = ensure_labels_file(cfg.LABELS_PATH, cfg.CSV_PATH)
-
+    labels = ensure_labels_file(
+        cfg.LABELS_PATH, cfg.CSV_PATH,
+        groups_only=cfg.PREDICT_GROUPS_ONLY,
+        tech2groups=tech2groups
+    )
     if len(labels) == 0:
-        print("[ERROR] Label space is empty. Ensure ti_groups_techniques.csv maps your techniques to groups.")
+        print("[ERROR] Label space is empty. Either set PREDICT_GROUPS_ONLY=False or ensure ti_groups_techniques.csv maps your techniques to groups.")
         return
-    # Probe CSV once so we can handle k-fold even without a 'split' column
-    with cfg.CSV_PATH.open("r", encoding="utf-8") as f:
-        _rows_probe = list(csv.DictReader(f))
-    _has_split_col = bool(_rows_probe and "split" in _rows_probe[0])
-
-    # Build run list from CFG.N_FOLDS (single point of control)
-    # Option A: random split + exactly one k-fold with k = N_FOLDS
-    run_ks = [0] + ([cfg.N_FOLDS] if cfg.N_FOLDS >= 2 else [])
-
-    # If you instead want every k from 2..N_FOLDS, use this:
-    # run_ks = [0] + (list(range(2, cfg.N_FOLDS + 1)) if cfg.N_FOLDS >= 2 else [])
 
     # --- Static artifacts for model init (shared across runs) ---
     label2id = {l: i for i, l in enumerate(labels)}
@@ -502,10 +471,14 @@ def main():
     best_score = -1.0
     best_src_dir: Path | None = None
 
-    for k in run_ks:
+    # --- Try k = 0..10 (skip k=1) ---
+    for k in range(0, 11):
+        if k == 1:
+            continue
+
+        # Decide split mode & run directory
         use_random_split = (k == 0)
         use_kfold = (k >= 2)
-
         if use_kfold:
             cfg.USE_KFOLD = True
             cfg.USE_RANDOM_SPLIT = False
@@ -513,12 +486,10 @@ def main():
         else:
             cfg.USE_KFOLD = False
             cfg.USE_RANDOM_SPLIT = True
-            cfg.N_FOLDS = 0
 
-        run_dir = run_output_dir(k if use_kfold else 0, model_slug="roberta_base_v1")
+        run_dir = output_dir_for_folds(k if use_kfold else 0, model_slug="roberta_base_v1")
+        run_dir.mkdir(parents=True, exist_ok=True)
         print_run_banner(labels, cfg, run_dir)
-
-
 
         # Write static artifacts for this run
         (run_dir / "label2id.json").write_text(json.dumps(label2id, indent=2), encoding="utf-8")
@@ -568,47 +539,16 @@ def main():
             targs = build_training_args(cfg, do_eval_in_training=use_eval_in_training, out_dir=run_dir)
             callbacks = maybe_early_stopping(use_eval_in_training, cfg, targs) or []
 
-            class WeightedBCETrainer(Trainer):
-                def compute_loss(
-                    self,
-                    model,
-                    inputs,
-                    return_outputs: bool = False,
-                    num_items_in_batch: Optional[int] = None,  # <-- accept the new kwarg
-                ):
-                    labels = inputs.pop("labels")
-                    weights = inputs.pop("sample_weight", None)
-
-                    # forward
-                    outputs = model(**inputs)
-                    logits = outputs.logits
-
-                    # ensure float dtype
-                    if not torch.is_floating_point(labels):
-                        labels = labels.float()
-                    loss = F.binary_cross_entropy_with_logits(logits, labels, reduction="none")
-                    loss = loss.mean(dim=1)  # per-example
-
-                    if weights is not None:
-                        if not torch.is_floating_point(weights):
-                            weights = weights.float()
-                        # match device/shape
-                        weights = weights.to(loss.device)
-                        loss = loss * weights
-
-                    loss = loss.mean()
-                    return (loss, outputs) if return_outputs else loss
-            trainer = WeightedBCETrainer(
-            model=base_model,
-            args=targs,
-            train_dataset=train_ds,
-            eval_dataset=val_ds if use_eval_in_training else None,
-            tokenizer=tokenizer,
-            data_collator=data_collator,
-            compute_metrics=make_compute_metrics(cfg.THRESHOLD) if use_eval_in_training else None,
-            callbacks=callbacks,
-
-        )
+            trainer = Trainer(
+                model=base_model,
+                args=targs,
+                train_dataset=train_ds,
+                eval_dataset=val_ds if use_eval_in_training else None,
+                tokenizer=tokenizer,
+                data_collator=data_collator,
+                compute_metrics=make_compute_metrics(cfg.THRESHOLD) if use_eval_in_training else None,
+                callbacks=callbacks,
+            )
 
             print("[INFO] Training…")
             trainer.train()
@@ -630,14 +570,8 @@ def main():
                 test_ds = MultiLabelCSVDataset(cfg.CSV_PATH, split=None, tokenizer=tokenizer,
                                                label2id=label2id, max_len=cfg.MAX_LEN, index_subset=test_idx)
                 targs_noeval = build_training_args(cfg, do_eval_in_training=False, out_dir=run_dir)
-                trainer_test = WeightedBCETrainer(
-                    model=base_model,
-                    args=targs_noeval,
-                    data_collator=data_collator,
-                    tokenizer=tokenizer,
-                )
+                trainer_test = Trainer(model=base_model, args=targs_noeval, data_collator=data_collator, tokenizer=tokenizer)
                 logits, labels_np, _ = trainer_test.predict(test_ds)
-
                 probs = 1 / (1 + np.exp(-logits))
                 preds = (probs >= cfg.THRESHOLD).astype(np.int32)
                 metrics_json["test"] = _precision_recall_f1(labels_np.astype(np.int32), preds)
@@ -741,24 +675,10 @@ def main():
             except Exception as e:
                 print(f"[WARN] Failed to copy best run to {BEST_DIR}: {e}")
 
-    # if best_src_dir is None:
-    #     print("[WARN] No best model selected (scores missing?).")
-    # else:
-    #     print(f"[OK] Finished. Best model from: {best_src_dir}  →  {BEST_DIR}")
-    # # Finally, prune experiments (keep only metrics.json and README.txt)
     if best_src_dir is None:
         print("[WARN] No best model selected (scores missing?).")
     else:
         print(f"[OK] Finished. Best model from: {best_src_dir}  →  {BEST_DIR}")
-
-    # Replace previous prune_experiments(...) with:
-    finalize_and_cleanup(best_src_dir=best_src_dir, best_dir=BEST_DIR, experiments_root=EXPERIMENTS_ROOT)
-
-    # try:
-    #     prune_experiments(EXPERIMENTS_ROOT)
-    #     print(f"[OK] Pruned experiments under {EXPERIMENTS_ROOT} (kept metrics.json & README.txt per run).")
-    # except Exception as e:
-    #     print(f"[WARN] Pruning experiments failed: {e}")
 
 if __name__ == "__main__":
     main()
