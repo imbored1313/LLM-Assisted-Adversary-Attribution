@@ -213,3 +213,50 @@ button:hover {
   float: right;
 }
 
+
+/* === Progress bar === */
+.prog-track {         /* <-- fixed: class selector with dot */
+  height: 10px;
+  background: #eee;
+  border-radius: 6px;
+  overflow: hidden;
+  position: relative;
+}
+#bar {
+  height: 100%;
+  width: 0%;
+  background: #4caf50;
+  transition: width .25s linear;
+}
+/* indeterminate animation */
+#bar.indeterminate {
+  width: 100% !important;
+  position: relative;
+  overflow: hidden;
+}
+#bar.indeterminate::before {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0;
+  left: -40%;
+  width: 40%;
+  background: rgba(255,255,255,.45);
+  animation: indet 1.2s linear infinite;
+}
+@keyframes indet {
+  from { left: -40%; }
+  to   { left: 100%; }
+}
+
+/* message spinner */
+.dotdotdot::after {
+  content: '…';
+  animation: dots 1.2s steps(4, end) infinite;
+}
+@keyframes dots {
+  0% { content: ''; }
+  25% { content: '.'; }
+  50% { content: '..'; }
+  75% { content: '...'; }
+  100% { content: ''; }
+}
