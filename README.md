@@ -32,22 +32,34 @@ This toolchain extracts Indicators of Compromise (IOCs) and MITRE ATT&CK Techniq
 ```
 ICT3214-SEC-ANALYTICS/
 ├──► app.py - Flask web app
+│
 ├──► data/
 │     ├──► raw/
-│           ├──► attack_stix/ - contains enterprise-attack from MITRE
-│           ├──► pdfs/ - contains APTnotes PDF files
-│           ├──► excel/ - contains extracted enterprise-attack MITRE ATT&CK & mitigation techniques
-│     ├──► mapped/ - contains the pdfs with successful correlation of IOCs and ATT&CK techniques
+│     │     ├──► attack_stix/ - contains enterprise-attack from MITRE
+│     │     │
+│     │     ├──► pdfs/ - contains APTnotes PDF files
+│     │     │
+│     │     └──► excel/ - contains extracted enterprise-attack MITRE ATT&CK & mitigation techniques
+│     │
+│     └──► mapped/ - contains the pdfs with successful correlation of IOCs and ATT&CK techniques
+│
 ├──► src/
 │     ├──► scripts/ - contains scripts to extract files, create datasets or map techniques to threat groups 
-│     ├──► models/ - contains latest and best RoBERTa model as well as scripts to train and predict
+│     │
+│     └──► models/ - contains latest and best RoBERTa model as well as scripts to train and predict
+│
 ├──► templates/
 │       ├──► common/ - contains html that are used by all other pages
+│       │
 │       ├──► index.html - Serves as the main landing page and user interface for the Flask-based MITRE ATT&CK Threat Attribution system. 
+│       │
 │       ├──► error.html - Error page rendered when invalid input, missing files, or API-related exceptions occur during app execution.
-│       ├──► results.html - Displays the dual-output comparison between the rule-based and RoBERTa-based threat attribution flows.  
+│       │
+│       └──► results.html - Displays the dual-output comparison between the rule-based and RoBERTa-based threat attribution flows.  
+│
 ├──► requirements.txt - list of dependencies that need to be installed via "pip install -r requirements"
-├──► project_paths.py - script that has static variables used by other scripts that is related to path locations 
+│
+└──► project_paths.py - script that has static variables used by other scripts that is related to path locations 
 ```
 ---
 
@@ -68,7 +80,7 @@ src/scripts
 │
 ├──► mitigations.py → Retrieves defensive mitigations corresponding to the TTPs associated with matched groups
 │
-├──► technique_labels.py - HELP
+├──► technique_labels.py - Extracts MITRE techniques IDs and technique names for dropdown menu
 │
 └──► report_generator.py → Generates GenAI-based structured intelligence reports summarizing group matches, mitigations, and analyst insights
 ```
@@ -92,12 +104,16 @@ git clone https://github.com/ProxyLeech/ICT3214-Sec-Analytics
 cd ICT3214-Sec-Analytics
 
 # 2. Create a virtual environment
+# On macOS / Linux:
+python3 -m venv .venv
+# On Windows:
 python -m venv .venv
 
 # 3. Activate the virtual environment
 # On macOS / Linux:
 source .venv/bin/activate
 # On Windows:
+.venv\Scripts\activate 
 
 
 # 4. Install dependencies
@@ -112,81 +128,10 @@ echo "OPENAI_API_KEY=YOUR_KEY_HERE" > .env
 
 ---
 
-## Prerequisites to run
-
-### 1. Extract IOCs from APTnotes PDFs
-
-python extract_pdfs.py
-
-
-This script extracts text, metadata, and Indicators of Compromise (IOCs) such as URLs, domains, IPs, hashes, and emails from PDF files into a folder called `extracted_pdfs`. It saves the extracted data as text files and metadata JSON, and writes all found IOCs to a CSV file called `extracted_iocs.csv` for further analysis.
-
-- Input: Folder containing PDF reports (`aptnotes_pdfs/*.pdf`)  
-- Output: `Data/extracted_pdfs/extracted_iocs.csv`
-
----
-
-### 2. Map IOCs to MITRE ATT&CK Groups
-
-python map_iocs_to_attack.py
-
-
-
-This script maps observed IOCs from PDF reports to MITRE ATT&CK techniques and threat groups by cross-referencing CSV and JSON data. It ranks threat groups based on technique matches, outputs detailed CSV reports, and generates mini STIX bundles for each analyzed file.
-
-- Input: `Data/extracted_pdfs/extracted_iocs.csv`  
-- Output:
-  - `Data/mapped/ranked_groups.csv`
-  - `Data/mapped/group_ttps_detail.csv`
-
----
-
-### 3. Process and Normalize the MITRE Dataset
-
-python enterprise_attack.py
-
-
-This script parses the local MITRE ATT&CK Enterprise bundle (enterprise-attack.json) and builds the relational mapping between intrusion sets (groups) and techniques/sub-techniques.
-The resulting CSV is essential for both the IOC mapping process and Roberta model training.
-
-- Input: `Data/attack_stix/enterprise-attack/enterprise-attack-<version>.json`
-
-- Output: `Data/attack_stix/processed/ti_groups_techniques.csv`
-
-Contains columns: `group_sid, group_id, group_name, technique_id, technique_name, is_subtechnique`
-
----
-
-### 4. Build the Labeled Dataset for Roberta Model Training
-
-python build_dataset.py
-
-This script consolidates the outputs from the IOC mapping (map_iocs_to_attack.py) and MITRE ATT&CK dataset (enterprise_attack.py) into a labeled dataset suitable for Roberta model fine-tuning and evaluation.
-It constructs a multi-label classification dataset that maps threat groups to their observed techniques.
-
-- Input:
-`Data/mapped/group_ttps_detail.csv`
-`Data/attack_stix/processed/ti_groups_techniques.csv`
-
-- Output:
-`Data/processed/dataset.csv` – Text dataset for model training
-`Data/processed/labels.txt` – Class label reference file
-
----
-
 ## Usage
 
 ```
-## 1. Create all the necessary files
-Run the following scripts sequentially to extract IOCs, build datasets, and map ATT&CK relationships:
-
-
-python src\data\extract_pdfs.py
-python src\data\build_dataset.py
-python src\data\enterprise_attack.py
-python Data\map_iocs_to_attack.py
-
-## 2. Run the web application
+## 1. Run the web application
 
 python app.py
 navigate to `http://127.0.0.1:5000`
@@ -203,13 +148,13 @@ navigate to `http://127.0.0.1:5000`
 
 ## Troubleshooting
 
-| Issue                        | Cause                          | Solution                              |
-|-----------------------------|---------------------------------|----------------------------------------|
-| PyMuPDF not found           | Missing dependency              | Run `pip install pymupdf`              |
-| OPENAI_API_KEY not found    | `.env` file missing             | Add your key to `.env`                 |
-| No PDFs found               | Incorrect input folder          | Ensure path to `aptnotes_pdfs/` is correct |
-| Empty report output         | Invalid TTP input format        | Use valid MITRE IDs (e.g., `T1059.003`) |
-
+| Issue                       | Cause                                    | Solution                                    |
+|-----------------------------|------------------------------------------|---------------------------------------------|
+| OPENAI_API_KEY not found    | `.env` file missing                      | Add your key to `.env`                      |
+| No PDFs found               | Incorrect input folder                   | Ensure path to `aptnotes_pdfs/` is correct  |
+| Empty report output         | Invalid TTP input format                 | Use valid MITRE IDs (e.g., `T1059.003`)     |
+| Empty Confidence Assessment | Occassional Issues if Submit when Idle   | Return to the homepage and Click "Build/    |
+|                             |                                          | Resume" before Submitting the TTPs          |
 ---
 
 
