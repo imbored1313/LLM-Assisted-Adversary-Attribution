@@ -3,195 +3,12 @@
 <head>
   <title>Adversary Attribution Report</title>
 
-  {% if not export_mode %}
-    <!-- ========================= Browser Styling ========================= -->
+   {% if not export_mode %}
+    <!-- Normal Browser Styling -->
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <style>
-      body {
-        font-family: "Segoe UI", Roboto, Arial, sans-serif;
-        background-color: #f5f7fa;
-        color: #222;
-        line-height: 1.6;
-      }
-
-      h1 {
-        color: #003366;
-        border-bottom: 3px solid #0056b3;
-        padding-bottom: 6px;
-        margin-top: 1.2rem;
-      }
-
-      h3 {
-        color: #004c99;
-        margin-top: 2rem;
-      }
-
-      .timestamp {
-        font-size: 0.9em;
-        color: #777;
-        margin-bottom: 20px;
-      }
-
-      .card {
-        background: #fff;
-        border-radius: 10px;
-        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
-        padding: 20px 25px;
-        margin-bottom: 20px;
-      }
-
-      .card h4 {
-        color: #003366;
-        border-left: 4px solid #0056b3;
-        padding-left: 8px;
-        margin-top: 0;
-      }
-
-      table {
-        border-collapse: collapse;
-        width: 100%;
-        background-color: #fff;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-        margin-bottom: 20px;
-      }
-
-      th, td {
-        border: 1px solid #ccc;
-        padding: 8px 10px;
-        font-size: 13px;
-        text-align: left;
-        vertical-align: top;
-      }
-
-      th {
-        background: #e8f0ff;
-        color: #002b5c;
-        font-weight: 600;
-      }
-
-      tr:hover {
-        background: #f3f7ff;
-      }
-
-      .ttp-cell {
-        max-height: 120px;
-        overflow-y: auto;
-        background: #f9fafc;
-        border-radius: 6px;
-        padding: 6px;
-        font-family: Consolas, monospace;
-        white-space: pre-wrap;
-        word-break: break-word;
-      }
-
-      pre {
-        background: #f8f9fb;
-        border-left: 4px solid #0056b3;
-        padding: 10px 12px;
-        border-radius: 6px;
-        font-family: Consolas, monospace;
-        font-size: 13px;
-        white-space: pre-wrap;
-        word-break: break-word;
-        color: #333;
-      }
-
-      .mitigation-block {
-        background: #fefefe;
-        border-left: 5px solid #2b6cb0;
-        border-radius: 8px;
-        padding: 12px 16px;
-        margin-bottom: 15px;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-      }
-
-      .mitigation-block strong {
-        color: #0d47a1;
-        display: block;
-        margin-bottom: 4px;
-        font-size: 14px;
-      }
-
-      .mitigation-block ul {
-        margin: 0;
-        padding-left: 20px;
-      }
-
-      .divider {
-        margin: 40px 0;
-        border-top: 2px solid #ccc;
-      }
-
-      a#export {
-        display: inline-block;
-        background-color: #0056b3;
-        color: white;
-        text-decoration: none;
-        padding: 6px 12px;
-        border-radius: 4px;
-        margin-left: 10px;
-        transition: background-color 0.2s ease;
-      }
-
-      a#export:hover {
-        background-color: #003f7f;
-      }
-    </style>
-
   {% else %}
-    <!-- ========================= Word Export (Safe HTML) ========================= -->
-    <style>
-      body { font-family: Arial, sans-serif; margin: 30px; font-size: 12px; color: #111; }
-      h1 { color: #003366; border-bottom: 2px solid #ccc; padding-bottom: 4px; }
-      h3, h4 { color: #004c99; margin-top: 16px; }
-      table {
-        border-collapse: collapse;
-        width: 100%;
-        table-layout: fixed;
-        word-wrap: break-word;
-      }
-      th, td {
-        border: 1px solid #999;
-        text-align: left;
-        padding: 6px 8px;
-        vertical-align: top;
-        white-space: pre-wrap;
-        word-break: break-word;
-        font-size: 11px;
-      }
-      th {
-        background-color: #e6f0ff;
-        color: #002b5c;
-        font-weight: bold;
-      }
-      tr:nth-child(even) { background-color: #f9f9f9; }
-      pre {
-        background: #f8f8f8;
-        border: 1px solid #ddd;
-        padding: 8px;
-        white-space: pre-wrap;
-        word-break: break-word;
-        font-size: 11px;
-      }
-      .timestamp { font-size: 0.85em; color: #666; }
-      .ttp-cell {
-        max-height: none;
-        overflow: visible;
-        display: block;
-        font-family: monospace;
-        background-color: #fafafa;
-        border: 1px solid #ddd;
-        padding: 4px;
-      }
-      .mitigation-block {
-        border-left: 3px solid #004c99;
-        margin: 6px 0;
-        padding: 4px 8px;
-      }
-      .mitigation-block strong {
-        color: #004c99;
-      }
-    </style>
+    <!-- Word Export Styling -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/export_style.css') }}">
   {% endif %}
 </head>
 
@@ -260,7 +77,7 @@
   {% endif %}
 {%- endmacro %}
 
-<body>
+<body class="results">
   {% if not export_mode %}
     {% include 'common/navbar.html' %}
   {% endif %}

@@ -260,3 +260,137 @@ button:hover {
   75% { content: '...'; }
   100% { content: ''; }
 }
+
+
+/* ========================= Results Page Styles ========================= */
+
+body.results {
+  background-color: #f5f7fa;
+  color: #222;
+  line-height: 1.6;
+  font-family: "Segoe UI", Roboto, Arial, sans-serif;
+}
+
+.results h1 {
+  color: #003366;
+  border-bottom: 3px solid #0056b3;
+  padding-bottom: 6px;
+  margin-top: 1.2rem;
+}
+
+.results h3 {
+  color: #004c99;
+  margin-top: 2rem;
+}
+
+.timestamp {
+  font-size: 0.9em;
+  color: #777;
+  margin-bottom: 20px;
+}
+
+.card {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  padding: 20px 25px;
+  margin-bottom: 20px;
+}
+
+.card h4 {
+  color: #003366;
+  border-left: 4px solid #0056b3;
+  padding-left: 8px;
+  margin-top: 0;
+}
+
+table.groups-table {
+  border-collapse: collapse;
+  width: 100%;
+  background-color: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  margin-bottom: 20px;
+}
+
+.groups-table th,
+.groups-table td {
+  border: 1px solid #ccc;
+  padding: 8px 10px;
+  font-size: 13px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.groups-table th {
+  background: #e8f0ff;
+  color: #002b5c;
+  font-weight: 600;
+}
+
+.groups-table tr:hover {
+  background: #f3f7ff;
+}
+
+.ttp-cell {
+  max-height: 120px;
+  overflow-y: auto;
+  background: #f9fafc;
+  border-radius: 6px;
+  padding: 6px;
+  font-family: Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+pre {
+  background: #f8f9fb;
+  border-left: 4px solid #0056b3;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-family: Consolas, monospace;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #333;
+}
+
+.mitigation-block {
+  background: #fefefe;
+  border-left: 5px solid #2b6cb0;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 15px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.mitigation-block strong {
+  color: #0d47a1;
+  display: block;
+  margin-bottom: 4px;
+  font-size: 14px;
+}
+
+.mitigation-block ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.divider {
+  margin: 40px 0;
+  border-top: 2px solid #ccc;
+}
+
+a#export {
+  display: inline-block;
+  background-color: #0056b3;
+  color: white;
+  text-decoration: none;
+  padding: 6px 12px;
+  border-radius: 4px;
+  margin-left: 10px;
+  transition: background-color 0.2s ease;
+}
+
+a#export:hover {
+  background-color: #003f7f;
+}
