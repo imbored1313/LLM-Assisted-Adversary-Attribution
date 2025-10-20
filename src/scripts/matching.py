@@ -6,17 +6,11 @@ import re
 import sys
 from typing import Iterable, Set, Tuple
 import pandas as pd
-
 ROOT = Path(__file__).resolve().parents[2]  # repo root
 sys.path.insert(0, str(ROOT))
-
 from project_paths import (
-    PROJECT_ROOT,
-    MAPPED_DIR,
-    GROUP_TTPS_DETAIL_CSV,
-    RANKED_GROUPS_CSV,
+    PROJECT_ROOT, MAPPED_DIR, GROUP_TTPS_DETAIL_CSV,GROUP_TTPS_DETAIL_CSV,RANKED_GROUPS_CSV,
 )
-
 # ============================================
 # Regex definitions
 # ============================================
@@ -43,20 +37,24 @@ def validate_ttps(ttps: Iterable[str]) -> Tuple[str, ...]:
     return ttps
 
 # ============================================
-# Dataset loading
+# Dataset handling — now merges both CSVs
 # ============================================
 def load_combined_dataset(MAPPED_DIR: Path) -> pd.DataFrame:
     """
     Load and merge both 'group_ttps_detail.csv' and 'ranked_groups.csv'
-    if they exist. Duplicates are dropped.
+    if they exist. This ensures that main and sub-techniques like
+    T1110 / T1110.002 are both represented.
     """
+    group_path = GROUP_TTPS_DETAIL_CSV
+    ranked_path = RANKED_GROUPS_CSV
+
     dfs = []
-    if GROUP_TTPS_DETAIL_CSV.exists():
-        dfs.append(pd.read_csv(GROUP_TTPS_DETAIL_CSV))
-        logging.info(f"Loaded {GROUP_TTPS_DETAIL_CSV.name} ({len(dfs[-1])} rows)")
-    if RANKED_GROUPS_CSV.exists():
-        dfs.append(pd.read_csv(RANKED_GROUPS_CSV))
-        logging.info(f"Loaded {RANKED_GROUPS_CSV.name} ({len(dfs[-1])} rows)")
+    if group_path.exists():
+        dfs.append(pd.read_csv(group_path))
+        logging.info(f"Loaded {group_path.name} ({len(dfs[-1])} rows)")
+    if ranked_path.exists():
+        dfs.append(pd.read_csv(ranked_path))
+        logging.info(f"Loaded {ranked_path.name} ({len(dfs[-1])} rows)")
 
     if not dfs:
         raise FileNotFoundError(f"No datasets found in {MAPPED_DIR}")
@@ -94,28 +92,39 @@ def split_tokens(cell) -> Set[str]:
         return set()
     return set(m.upper() for m in TTP_PATTERN.findall(str(cell)))
 
+def with_roots(tts: Iterable[str]) -> Set[str]:
+    out: Set[str] = set()
+    input_roots = {t.split(".", 1)[0] for t in tts if "." in t}
+
+    for t in tts:
+        out.add(t)
+        # Add root only if:
+        # - it’s not already in the input list, AND
+        # - this TTP is a sub-technique (has a dot)
+        root = t.split(".", 1)[0]
+        if "." in t and root not in input_roots:
+            out.add(root)
+
+    return out
+
 # ============================================
-# Strict matching (no root expansion)
+# Matching logic
 # ============================================
 def match_ttps(ttps: Tuple[str, ...], MAPPED_DIR: Path) -> pd.DataFrame:
     """
-    STRICT matching logic:
-    - Only matches exact input TTPs (no parent/root expansion).
-    - If input is T1110.001, it only matches dataset rows containing T1110.001.
-    - If input is T1110, it can still match sub-techniques if they explicitly appear in dataset.
+    Match input TTPs against the combined dataset.
     """
     df = load_combined_dataset(MAPPED_DIR)
     ttp_col = find_ttp_column(df)
 
-    # Extract techniques per dataset row
     df["_ttp_set"] = df[ttp_col].map(split_tokens)
+    df["_ttp_root_set"] = df["_ttp_set"].map(with_roots)
 
-    # Build input set (strict)
-    input_full = {t.upper() for t in ttps}
+    input_full = set(ttps)
+    input_plus_roots = with_roots(input_full)
 
-    # Match only if any input exactly appears in dataset tokens
-    mask = df["_ttp_set"].apply(lambda s: bool(input_full & s))
-    matched = df.loc[mask].drop(columns=["_ttp_set"])
+    mask = df["_ttp_root_set"].apply(lambda s: bool(input_plus_roots & s))
+    matched = df.loc[mask].drop(columns=["_ttp_set", "_ttp_root_set"])
     return matched
 
 # ============================================
@@ -124,8 +133,9 @@ def match_ttps(ttps: Tuple[str, ...], MAPPED_DIR: Path) -> pd.DataFrame:
 def write_outputs(matched: pd.DataFrame, ttps: Tuple[str, ...], out_dir: Path) -> Tuple[Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     matched_out = out_dir / "matched_groups_rule.csv"
+
     matched.to_csv(matched_out, index=False)
-    return matched_out, out_dir / "inputted_ttps.csv"
+    return matched_out
 
 # ============================================
 # CLI entry point
@@ -141,7 +151,6 @@ def main() -> int:
         matched = match_ttps(ttps, MAPPED_DIR)
 
         m_out, t_out = write_outputs(matched, ttps, out_dir)
-        pd.DataFrame({"TTP": ttps}).to_csv(t_out, index=False)
 
         logging.info(f"Matched {len(matched)} rows -> {m_out}")
         logging.info(f"Saved inputted TTPs -> {t_out}")
@@ -157,7 +166,6 @@ def main() -> int:
     except Exception as e:
         logging.error(str(e))
         return 1
-
 
 if __name__ == "__main__":
     sys.exit(main())

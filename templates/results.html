@@ -11,7 +11,6 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/export_style.css') }}">
   {% endif %}
 </head>
-
 {% macro group_table(rows, mode) -%}
   {% set has_rows = rows is iterable and (rows|length > 0) %}
   {% if not has_rows %}
@@ -24,14 +23,16 @@
       "rank": "Rank",
       "origin": "Origin",
       "matched_exact": "Matched (Exact)",
+      "matched_root_only": "Matched (Root-only)",
       "technique_id_list": "All Associated Techniques From The Group",
     } %}
 
     {% set base_order = ["group_id","group_name","group_score","rank","origin"] %}
 
+    {# default: no extra associated column #}
     {% set associated_col = None %}
     {% if mode == 'rule' %}
-      {% set extra_cols = ["matched_exact"] %}
+      {% set extra_cols = ["matched_exact","matched_root_only"] %}
       {% set origin_source = "origin" %}
     {% else %}
       {% set extra_cols = [] %}
@@ -50,6 +51,7 @@
             {% for c in cols %}
               <th>{{ display.get(c, c|replace('_',' ')|title) }}</th>
             {% endfor %}
+            {# render the “All Associated …” column ONLY if defined #}
             {% if associated_col %}
               <th>{{ display.get(associated_col, "All Associated TTPs") }}</th>
             {% endif %}
@@ -152,7 +154,7 @@
         <h4>Inputted Techniques</h4>
         <p><code>{{ ttps | join(', ') }}</code></p>
       </div>
-
+      
       <div class="card">
         <h4 class="section-title"><span class="section-num"></span> Top 3 Matched Threat Groups</h4>
         {{ group_table(rob_matched, 'roberta') }}
