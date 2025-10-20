@@ -336,9 +336,21 @@ def _run_rule_match_flow(ttps: list[str]) -> dict:
 
     # top group ttps for mitigation filter
     top_rank_row = matched_df.loc[matched_df["rank"] == matched_df["rank"].min()].head(1)
-    top_group_ttps = _extract_ttps_from_text(top_rank_row.iloc[0]["combined_ttps"]) if (
-        not top_rank_row.empty and "combined_ttps" in top_rank_row.columns
-    ) else []
+
+    top_group_ttps = set()
+    if not top_rank_row.empty:
+       for col in ["matched_exact", "matched_root_only"]:
+         if col in top_rank_row.columns:
+            val = top_rank_row.iloc[0][col]
+            if isinstance(val, str):
+                ttps_in_col = re.findall(r"\bT\d{4}(?:\.\d{3})?\b", val.upper())
+                top_group_ttps.update(ttps_in_col)
+            elif isinstance(val, (list, set)):
+                top_group_ttps.update([t.upper() for t in val])
+
+    top_group_ttps = sorted(top_group_ttps)
+    print(f"[DEBUG] Mitigations will use {len(top_group_ttps)} TTPs from the top-ranked group only:")
+    print(f"[DEBUG] {top_group_ttps}")
 
     mit_filtered = load_filtered_mitigations(str(mit_csv_path), top_group_ttps)
 
@@ -1056,6 +1068,11 @@ def match():
         ttps = validate_ttps(ttps_input)
 
         matched_df = match_ttps(ttps, MAPPED_DIR)
+        # Keep root-expanded versions for mitigation logic
+        if "_ttp_with_roots" in matched_df.columns:
+            matched_df["_ttp_with_roots"] = matched_df["_ttp_with_roots"].apply(lambda s: set(s) if isinstance(s, (list, set)) else set())
+        else:
+            matched_df["_ttp_with_roots"] = matched_df["_ttp_set"]  # fallback
 
         # Convert numeric, sort, top3
         matched_df["rank"]  = pd.to_numeric(matched_df.get("rank", float("nan")), errors="coerce")
@@ -1074,9 +1091,18 @@ def match():
         gpt_response = analyze_TTP(ttps, matched_df, mitigations_csv=str(mit_csv_path))
         parsed = parse_ai_response(gpt_response)
 
-        group_ttps = collect_top_group_ttps(matched_df) or list({t.strip().upper() for t in ttps if t})
-
-        mit_filtered = load_filtered_mitigations(str(mit_csv_path), group_ttps)
+        group_ttps = set()
+        if "_ttp_with_roots" in matched_df.columns:
+         for s in matched_df["_ttp_with_roots"]:
+            if isinstance(s, (set, list)):
+              group_ttps.update(s)
+            elif isinstance(s, str):
+               group_ttps.update(re.findall(r"\bT\d{4}(?:\.\d{3})?\b", s.upper()))
+        else:
+            group_ttps = {t.strip().upper() for t in ttps if t}
+            group_ttps = sorted(group_ttps)
+            print(f"[DEBUG] Mitigation filter using {len(group_ttps)} TTPs: {group_ttps}")
+            mit_filtered = load_filtered_mitigations(str(mit_csv_path), group_ttps)
 
         # Remove duplicate mitigation descriptions
         if not mit_filtered.empty:

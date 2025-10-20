@@ -112,19 +112,39 @@ def with_roots(tts: Iterable[str]) -> Set[str]:
 # ============================================
 def match_ttps(ttps: Tuple[str, ...], MAPPED_DIR: Path) -> pd.DataFrame:
     """
-    Match input TTPs against the combined dataset.
+    Strictly match input TTPs against dataset but still expose full root-expanded
+    sets internally for later mitigation use.
     """
     df = load_combined_dataset(MAPPED_DIR)
-    ttp_col = find_ttp_column(df)
 
-    df["_ttp_set"] = df[ttp_col].map(split_tokens)
-    df["_ttp_root_set"] = df["_ttp_set"].map(with_roots)
+    # Extract all tokens
+    df["_ttp_exact"] = df.apply(
+        lambda r: split_tokens(r.get("matched_exact", "")) | split_tokens(r.get("matched_root_only", "")),
+        axis=1
+    )
 
-    input_full = set(ttps)
-    input_plus_roots = with_roots(input_full)
+    # Also keep root-expanded version for mitigations later
+    def _expand_with_roots(s: Set[str]) -> Set[str]:
+        out = set(s)
+        for t in list(s):
+            if "." in t:
+                out.add(t.split(".", 1)[0])
+        return out
 
-    mask = df["_ttp_root_set"].apply(lambda s: bool(input_plus_roots & s))
-    matched = df.loc[mask].drop(columns=["_ttp_set", "_ttp_root_set"])
+    df["_ttp_with_roots"] = df["_ttp_exact"].map(_expand_with_roots)
+
+    # Strict match (for overlap)
+    input_set = set(ttps)
+    mask = df["_ttp_exact"].apply(lambda s: bool(input_set & s))
+
+    matched = df.loc[mask].copy()
+
+    # Never drop key columns
+    keep_cols = ["group_name", "group_id", "matched_exact", "matched_root_only"]
+    others = [c for c in df.columns if c not in keep_cols]
+    matched = matched[keep_cols + others]
+
+    logging.info(f"[DEBUG] Strict match rows: {len(matched)} for {input_set}")
     return matched
 
 # ============================================

@@ -39,18 +39,16 @@ def load_csv_data():
     input_ttps = ttps_df["TTP"].dropna().tolist()
     return input_ttps, matched_df_rule, matched_df_roberta
 
-
-
 def load_mitigations_summary(mitigations_csv: str) -> str:
     """
-    Load and summarize mitigations.csv content to inject directly into the report
-    (without GPT generation).
+    Load and summarize mitigations.csv content to inject directly into the report.
+    Used only for quick display of the already-filtered mitigations file.
     """
     if not os.path.exists(mitigations_csv):
         return "No mitigations file found."
-    
+
     try:
-        df = MITIGATIONS_CSV
+        df = pd.read_csv(mitigations_csv)
         cols = [c for c in ["target id", "target name", "mapping description"] if c in df.columns]
         if not cols:
             return "Mitigations data is missing expected columns."
@@ -60,21 +58,15 @@ def load_mitigations_summary(mitigations_csv: str) -> str:
         lines = []
         for (tid, tname), grp in df.groupby([c for c in ["target id", "target name"] if c in df.columns]):
             desc_col = "mapping description" if "mapping description" in grp.columns else None
-            descs = []
-            if desc_col:
-                descs = grp[desc_col].dropna().astype(str).head(2).tolist()
-            line = f"{tid} – {tname}\n" + "\n".join(f"• {d}" for d in descs)
-            lines.append(line)
-            if len(lines) > 40:
+            descs = grp[desc_col].dropna().astype(str).head(2).tolist() if desc_col else []
+            lines.append(f"{tid} – {tname}\n" + "\n".join(f"• {d}" for d in descs))
+            if len(lines) >= 40:
                 break
 
-        if not lines:
-            return "No mitigation mappings available."
-
-        return "\n".join(lines)
-
+        return "\n".join(lines) if lines else "No mitigation mappings available."
     except Exception as e:
         return f"Error reading mitigations CSV: {e}"
+
     
 
 def load_filtered_mitigations(mitigations_csv: str, ttps: list[str]) -> pd.DataFrame:
@@ -83,7 +75,7 @@ def load_filtered_mitigations(mitigations_csv: str, ttps: list[str]) -> pd.DataF
     - Expands rows with multiple IDs (e.g. "T1001.001, T1001.002, T1001")
     - Matches *only exact technique IDs* from `ttps`
     - Does NOT include sub-techniques unless explicitly in input.
-    - ✅ Sorts output by MITRE numeric order (T1001 < T1021.005 < T1559.001)
+    -  Sorts output by MITRE numeric order (T1001 < T1021.005 < T1559.001)
     """
     import re
     import pandas as pd
