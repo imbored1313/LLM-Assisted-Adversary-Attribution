@@ -79,9 +79,10 @@ src/scripts
 │
 └──► report_generator.py → Generates GenAI-based structured intelligence reports summarizing group matches, mitigations, and analyst insights
 ```
-<img width="329" height="554" alt="image" src="https://github.com/user-attachments/assets/12cbaa1c-3185-4f0f-be1f-b5814e8d2991" />
-<img width="421" height="554" alt="image" src="https://github.com/user-attachments/assets/e17b00be-1d62-4069-95ba-094594ced439" />
-<img width="755" height="616" alt="image" src="https://github.com/user-attachments/assets/ccbe8831-b622-4825-a193-c9af4b944aad" />
+<img width="450" height="500" alt="image" src="https://github.com/user-attachments/assets/7d663766-5bb2-4217-85bf-bf813b0cc1d1" />
+<img width="450" height="500" alt="image" src="https://github.com/user-attachments/assets/3d15d2e7-88b7-4385-b488-935bc2916910" />
+
+<img width="905" height="800" alt="image" src="https://github.com/user-attachments/assets/10f81c44-c773-4fc9-ad50-d609c42c9f51" />
 
 ---
 
@@ -153,6 +154,7 @@ navigate to `http://127.0.0.1:5000`
 | Empty Confidence Assessment | Occassional Issues if Submit when Idle               | Return to the homepage and Click "Build/                                          |
 | Empty mitigations file      | Missing Data\processed\mitigations\mitigations.csv   | Ensure mitigations.csv exist in the specified directory and restart flask         |
 ---
+
 
 
 
