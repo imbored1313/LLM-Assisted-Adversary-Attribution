@@ -2,91 +2,204 @@
 <html lang="en">
 <head>
   <title>Adversary Attribution Report</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/attribution.css') }}">
-  <style>
-    h1 {
-      color: #0056b3;
-      border-bottom: 2px solid #e0e0e0;
-      padding-bottom: 0.5rem;
-    }
-    h3 { margin-top: 2rem; color: #333; }
-    pre {
-      background: #f3f3f3;
-      padding: 1rem;
-      border-radius: 6px;
-      overflow-x: auto;
-      white-space: pre-wrap;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 1rem;
-      background: #fff;
-    }
-    th, td {
-      border: 1px solid #ddd;
-      padding: 8px;
-      text-align: left;
-    }
-    th {
-      background: #007bff;
-    }
-    a {
-      display: inline-block;
-      color: #007bff;
-      text-decoration: none;
-    }
-    a:hover { text-decoration: underline; }
-    .timestamp {
-      font-size: 0.9rem;
-      color: #666;
-    }
-  </style>
-</head>
-<body>
-  {% if not export_mode %}
-  {% include 'common/navbar.html' %}
+
+   {% if not export_mode %}
+    <!-- Normal Browser Styling -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  {% else %}
+    <!-- Word Export Styling -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/export_style.css') }}">
   {% endif %}
+</head>
+{% macro group_table(rows, mode) -%}
+  {% set has_rows = rows is iterable and (rows|length > 0) %}
+  {% if not has_rows %}
+    <p>No matches found.</p>
+  {% else %}
+    {% set display = {
+      "group_id": "Group ID",
+      "group_name": "Group Name",
+      "group_score": "Match Score",
+      "rank": "Rank",
+      "origin": "Origin",
+      "matched_exact": "Matched (Exact)",
+      "matched_root_only": "Matched (Root-only)",
+      "technique_id_list": "All Associated Techniques From The Group",
+    } %}
+
+    {% set base_order = ["group_id","group_name","group_score","rank","origin"] %}
+
+    {# default: no extra associated column #}
+    {% set associated_col = None %}
+    {% if mode == 'rule' %}
+      {% set extra_cols = ["matched_exact","matched_root_only"] %}
+      {% set origin_source = "origin" %}
+    {% else %}
+      {% set extra_cols = [] %}
+      {% set associated_col = "technique_id_list" %}
+      {% set origin_source = "doc_source" %}
+    {% endif %}
+
+    {% set first_row = rows|first %}
+    {% set keys = first_row.keys()|list if first_row else [] %}
+    {% set cols = (base_order + extra_cols) | select('in', keys) | list %}
+
+    <div style="overflow-x:auto;">
+      <table class="groups-table">
+        <thead>
+          <tr>
+            {% for c in cols %}
+              <th>{{ display.get(c, c|replace('_',' ')|title) }}</th>
+            {% endfor %}
+            {# render the “All Associated …” column ONLY if defined #}
+            {% if associated_col %}
+              <th>{{ display.get(associated_col, "All Associated TTPs") }}</th>
+            {% endif %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+            <tr>
+              {% for c in cols %}
+                {% if c == 'origin' %}
+                  <td>{{ row.get(origin_source, '—') }}</td>
+                {% else %}
+                  <td>{{ row.get(c, '—') }}</td>
+                {% endif %}
+              {% endfor %}
+              {% if associated_col %}
+                <td><div class="ttp-cell">{{ row.get(associated_col, '—') }}</div></td>
+              {% endif %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+{%- endmacro %}
+
+<body class="results">
+  {% if not export_mode %}
+    {% include 'common/navbar.html' %}
+  {% endif %}
+
   <div class="container">
-    <h1>Threat Attribution Report</h1>
-    <p class="timestamp">Generated on: {{ timestamp }}</p>
 
-    <h3>Inputted Techniques</h3>
-    <p>{{ ttps | join(', ') }}</p>
+    <!-- ========================= RULE-BASED ========================= -->
+    {% if not export_mode or request.args.get('which') == 'rule' %}
+      <h1>Adversary Attribution Report (Rule-based)</h1>
+      <p class="timestamp">Generated on: {{ timestamp }}</p>
 
-    <h3>Top 3 Matched Threat Groups</h3>
-    <table>
-      <tr>
-        {% for col in matched[0].keys() %}
-          <th>{{ col }}</th>
+      <div class="card">
+        <h4>Inputted Techniques</h4>
+        <p><code>{{ ttps | join(', ') }}</code></p>
+      </div>
+
+      <div class="card">
+        <h4 class="section-title"><span class="section-num"></span> Top 3 Matched Threat Groups</h4>
+        {{ group_table(rule_matched, 'rule') }}
+      </div>
+
+      <div class="card">
+        <h4>1. Executive Summary</h4>
+        <pre>{{ rule_analysis.summary }}</pre>
+      </div>
+
+      <div class="card">
+        <h4>2. Technique Overlap Overview</h4>
+        <pre>{{ rule_analysis.table }}</pre>
+      </div>
+
+      <div class="card">
+        <h4>3. Probable Threat Actor(s)</h4>
+        <pre>{{ rule_analysis.attacker }}</pre>
+      </div>
+
+      <div class="card">
+        <h4>4. Defensive Mitigations</h4>
+        {% for line in rule_analysis.mitigation.split('\n\n') if line.strip() %}
+          {% set parts = line.split('\n') %}
+          <div class="mitigation-block">
+            <strong>{{ parts[0] }}</strong>
+            <ul>
+              {% for d in parts[1:] if d.strip() %}
+                <li>{{ d.strip().lstrip('•').strip() }}</li>
+              {% endfor %}
+            </ul>
+          </div>
         {% endfor %}
-      </tr>
-      {% for row in matched %}
-      <tr>
-        {% for val in row.values() %}
-          <td>{{ val }}</td>
+      </div>
+
+      <div class="card">
+        <h4>5. Confidence Assessment</h4>
+        <pre>{{ rule_analysis.suggestion }}</pre>
+      </div>
+
+      {% if not export_mode %}
+        <a href="/">← Back to Selection</a>
+        <a id="export" href="/export?which=rule">Export Results (Rule-based)</a>
+      {% endif %}
+    {% endif %}
+
+    {% if not export_mode %}
+      <div class="divider"></div>
+    {% endif %}
+
+    <!-- ========================= ROBERTA ========================= -->
+    {% if not export_mode or request.args.get('which') == 'roberta' %}
+      <h1>Adversary Attribution Report (RoBERTa)</h1>
+      <p class="timestamp">Generated on: {{ timestamp }}</p>
+
+      <div class="card">
+        <h4>Inputted Techniques</h4>
+        <p><code>{{ ttps | join(', ') }}</code></p>
+      </div>
+      
+      <div class="card">
+        <h4 class="section-title"><span class="section-num"></span> Top 3 Matched Threat Groups</h4>
+        {{ group_table(rob_matched, 'roberta') }}
+      </div>
+
+      <div class="card">
+        <h4>1. Executive Summary</h4>
+        <pre>{{ rob_analysis.summary }}</pre>
+      </div>
+
+      <div class="card">
+        <h4>2. Technique Overlap Overview</h4>
+        <pre>{{ rob_analysis.table }}</pre>
+      </div>
+
+      <div class="card">
+        <h4>3. Probable Threat Actor(s)</h4>
+        <pre>{{ rob_analysis.attacker }}</pre>
+      </div>
+
+      <div class="card">
+        <h4>4. Defensive Mitigations</h4>
+        {% for line in rob_analysis.mitigation.split('\n\n') if line.strip() %}
+          {% set parts = line.split('\n') %}
+          <div class="mitigation-block">
+            <strong>{{ parts[0] }}</strong>
+            <ul>
+              {% for d in parts[1:] if d.strip() %}
+                <li>{{ d.strip().lstrip('•').strip() }}</li>
+              {% endfor %}
+            </ul>
+          </div>
         {% endfor %}
-      </tr>
-      {% endfor %}
-    </table>
+      </div>
 
-    <h3>Analyst Report</h3>
-    <section>
-      <h4>1. Executive Summary</h4>
-      <pre>{{ analysis.summary }}</pre>
+      <div class="card">
+        <h4>5. Confidence Assessment</h4>
+        <pre>{{ rob_analysis.suggestion }}</pre>
+      </div>
 
-      <h4>2. Technique Overlap Overview</h4>
-      <pre>{{ analysis.table }}</pre>
-
-      <h4>3. Probable Threat Actor(s)</h4>
-      <pre>{{ analysis.attacker }}</pre>
-
-      <h4>4. Defensive Mitigations</h4>
-      <pre>{{ analysis.mitigation }}</pre>
-
-      <h4>5. Analyst Recommendations</h4>
-      <pre>{{ analysis.suggestion }}</pre>
-    </section>
+      {% if not export_mode %}
+        <a href="/">← Back to Selection</a>
+        <a id="export" href="/export?which=roberta">Export Results (RoBERTa)</a>
+      {% endif %}
+    {% endif %}
   </div>
 </body>
 </html>

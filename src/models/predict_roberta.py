@@ -4,18 +4,16 @@ import argparse, json, re, csv
 from pathlib import Path
 from typing import List, Dict, Tuple, Iterable
 import sys
-import numpy as np
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
+ROOT = Path(__file__).resolve().parents[2]  # repo root
+sys.path.insert(0, str(ROOT))
+from project_paths import (
+    PROCESSED_DIR, BEST_MODEL_DIR,EXTRACTED_IOCS_CSV,
+)
 
-CURRENT_DIR = Path(__file__).resolve().parent
-SRC_ROOT = CURRENT_DIR.parent  # goes up from models → src
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
-from paths.paths import MODELS_ROOT, PROCESSED_DIR
-EXTRACTED_IOCS_CSV = PROCESSED_DIR / "extracted_iocs.csv"
-DEFAULT_MODEL_DIR = MODELS_ROOT / "best_roberta_for_predict"  
+DEFAULT_MODEL_DIR = BEST_MODEL_DIR
 DEFAULT_THRESHOLD = 0.5
 
 ATTACK_ID_RX = re.compile(r"^T\d{4}(?:\.\d{1,3})?$", re.I)
@@ -273,8 +271,6 @@ def resolve_sources_from_inputs(
 def main():
     p = argparse.ArgumentParser(description="Predict and expand to ATT&CK rows.")
     p.add_argument("--id", default="adhoc")
-    # p.add_argument("--source", help="Source label (e.g., PDF filename). Defaults to --id.")
-    p.add_argument("--text")
     p.add_argument("--url", action="append", default=[])
     p.add_argument("--domain", action="append", default=[])
     p.add_argument("--ip", action="append", default=[])
@@ -293,8 +289,7 @@ def main():
         ips=args.ip,
         md5s=args.md5,
         sha256s=args.sha256,
-        attack_ids=args.attack,
-        free_text=args.text,
+        attack_ids=args.attack
     )
 
     # Infer document provenance (PDF folders or fallback to id)
@@ -309,9 +304,6 @@ def main():
     attack_ids_from_input = {a.strip().upper() for a in args.attack if ATTACK_ID_RX.match(a or "")}
     flat_rows = expand_to_attack_rows(preds, attack_rows, attack_ids_in_input=attack_ids_from_input, origin_doc=doc_src)
     group_rows = aggregate_by_group(flat_rows)
-
-    print("\nINPUT TEXT:")
-    print(text)
     print_group_table(group_rows)
 
 

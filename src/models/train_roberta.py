@@ -11,7 +11,7 @@ Dataset CSV schema (required columns): id, text, labels, split
 from __future__ import annotations
 import csv
 import json
-import pathlib
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 from inspect import signature
@@ -20,6 +20,7 @@ import numpy as np
 from torch.utils.data import Dataset
 import numpy as np
 import torch
+import sys
 import shutil
 
 from transformers import (
@@ -30,10 +31,22 @@ from transformers import (
     Trainer,
     TrainingArguments,
 )
-from paths.paths import (
-    PROJECT_ROOT, DATA_ROOT, PROCESSED_DIR, MODELS_ROOT, LOGS_ROOT, output_dir_for_folds, EXPERIMENTS_ROOT  ,
+ROOT = Path(__file__).resolve().parents[2]  # repo root
+sys.path.insert(0, str(ROOT))
+from project_paths import (
+    PROJECT_ROOT, DATA_ROOT, EXPERIMENTS_ROOT, SRC_ROOT, MODELS_ROOT, EXPERIMENTS_ROOT,SCRIPTS_DIR,
+    RAW_DIR, PROCESSED_DIR, EXTRACTED_PDFS_DIR,
+    MAPPED_DIR, EXCEL_DIR, MITIGATIONS_DIR,
+    ATTACK_STIX_DIR,PDFS_DIR,RULES_DIR,EXTRACT_SCRIPT,ATTACK_SCRIPT,MAP_IOCS_SCRIPT,
+    BUILD_DATASET_SCRIPT,MITIGATIONS_SCRIPT,
+    GROUP_TTPS_DETAIL_CSV,MATCHING_SCRIPT,REPORT_GENERATION_SCRIPT,TECHNIQUE_LABELS_SCRIPT,
+    TRAIN_ROBERTA_SCRIPT,PREDICT_SCRIPT,BEST_MODEL_DIR,
+    MAPPING_CSV,MITIGATIONS_CSV,EXCEL_ATTACK_TECHS,
+    EXTRACTED_IOCS_CSV,TI_GROUPS_TECHS_CSV,DATASET_CSV,LABELS_TXT,GROUP_TTPS_DETAIL_CSV,RANKED_GROUPS_CSV,
+     project_path,ensure_dir_tree,add_src_to_syspath
 )
-from pathlib import Path
+
+BEST_DIR = BEST_MODEL_DIR
 # EarlyStopping is optional; present on most recent transformers
 try:
     from transformers import EarlyStoppingCallback  # type: ignore
@@ -41,6 +54,10 @@ try:
 except Exception:
     EarlyStoppingCallback = None  # type: ignore
     HAS_EARLY_STOP = False
+
+
+def output_dir_for_folds(n_folds: int, model_slug: str = "roberta_base"):
+    return EXPERIMENTS_ROOT / f"{n_folds}foldruns" / model_slug
 
 
 # =====================================================================
@@ -82,17 +99,13 @@ class Config:
     USE_KFOLD: bool = True     # <- disable k-fold when using random split
     USE_RANDOM_SPLIT: bool = True
     SPLIT_RATIOS: tuple[float, float, float] = (0.8, 0.1, 0.1)
-    N_FOLDS: int = 0               # 5-fold by default
+    N_FOLDS: int = 5               # 5-fold by default
     SHUFFLE_POOL: bool = True      # Shuffle train+val pool before folding
 
     OUTPUT_DIR = output_dir_for_folds(N_FOLDS, model_slug="roberta_base_v1")
     CSV_PATH   = PROCESSED_DIR / "dataset.csv"
     LABELS_PATH = PROCESSED_DIR / "labels.txt"
 
-
-    # ensure dirs exist
-    for d in [DATA_ROOT, PROCESSED_DIR, MODELS_ROOT, LOGS_ROOT, OUTPUT_DIR,]:
-        d.mkdir(parents=True, exist_ok=True)
 
 CFG = Config()
 
@@ -105,7 +118,7 @@ def set_seed(seed: int):
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
 
-def scan_split_counts(csv_path: pathlib.Path) -> Dict[str, int]:
+def scan_split_counts(csv_path: Path) -> Dict[str, int]:
     counts = {"train": 0, "val": 0, "test": 0}
     with csv_path.open("r", encoding="utf-8") as f:
         for r in csv.DictReader(f):
@@ -115,7 +128,7 @@ def scan_split_counts(csv_path: pathlib.Path) -> Dict[str, int]:
     print(f"[INFO] Split counts: train={counts['train']}  val={counts['val']}  test={counts['test']}")
     return counts
 
-def read_labels_from_csv(csv_path: pathlib.Path, groups_only: bool, tech2groups: dict[str, set[str]]) -> List[str]:
+def read_labels_from_csv(csv_path: Path, groups_only: bool, tech2groups: dict[str, set[str]]) -> List[str]:
     uniq = set()
     with csv_path.open("r", encoding="utf-8") as f:
         for r in csv.DictReader(f):
@@ -153,14 +166,14 @@ def read_labels_from_csv(csv_path: pathlib.Path, groups_only: bool, tech2groups:
         labels = tech + grp
     return labels
 
-def ensure_labels_file(labels_path: pathlib.Path, csv_path: pathlib.Path, groups_only: bool, tech2groups: dict[str, set[str]]) -> List[str]:
+def ensure_labels_file(labels_path: Path, csv_path: Path, groups_only: bool, tech2groups: dict[str, set[str]]) -> List[str]:
     if not labels_path.exists():
         labels = read_labels_from_csv(csv_path, groups_only=groups_only, tech2groups=tech2groups)
         labels_path.write_text("\n".join(labels) + "\n", encoding="utf-8")
         return labels
     return [l.strip() for l in labels_path.read_text(encoding="utf-8").splitlines() if l.strip()]
 
-def load_tech_to_groups_map(csv_path: pathlib.Path) -> dict[str, set[str]]:
+def load_tech_to_groups_map(csv_path: Path) -> dict[str, set[str]]:
     m: dict[str, set[str]] = {}
     path = csv_path
     if not path.exists():
@@ -176,7 +189,7 @@ def load_tech_to_groups_map(csv_path: pathlib.Path) -> dict[str, set[str]]:
             m.setdefault(tid, set()).add(g)
     return m
 
-def print_run_banner(labels: List[str], cfg: Config, out_dir: pathlib.Path):
+def print_run_banner(labels: List[str], cfg: Config, out_dir: Path):
     # Console banner with folds + hyperparameters
     print(
         "[OK] Labels loaded: {:d} | Folds: {} | Model: {} | "
@@ -190,7 +203,7 @@ def print_run_banner(labels: List[str], cfg: Config, out_dir: pathlib.Path):
         )
     )
 
-def write_readme(out_dir: pathlib.Path, labels: List[str], cfg: Config):
+def write_readme(out_dir: Path, labels: List[str], cfg: Config):
     readme = (
         f"Model: {cfg.MODEL_NAME}\n"
         f"Labels: {len(labels)}\n"
@@ -208,13 +221,13 @@ def write_readme(out_dir: pathlib.Path, labels: List[str], cfg: Config):
     )
     (out_dir / "README.txt").write_text(readme, encoding="utf-8")
 
-def compute_output_dir(cfg: Config) -> pathlib.Path:
+def compute_output_dir(cfg: Config) -> Path:
     """
     When k-fold is enabled, place outputs under '{N}foldruns/roberta'.
     Otherwise respect cfg.OUTPUT_DIR.
     """
     if cfg.USE_KFOLD:
-        return pathlib.Path(f"{cfg.N_FOLDS}foldruns/roberta")
+        return Path(f"{cfg.N_FOLDS}foldruns/roberta")
     return cfg.OUTPUT_DIR
 
 
@@ -356,7 +369,7 @@ def make_compute_metrics(threshold: float):
     return compute_metrics
 
 # --- Version-agnostic TrainingArguments builder ---
-def build_training_args(cfg: Config, do_eval_in_training: bool, out_dir: pathlib.Path) -> TrainingArguments:
+def build_training_args(cfg: Config, do_eval_in_training: bool, out_dir: Path) -> TrainingArguments:
     sig = signature(TrainingArguments.__init__)
     allowed = set(sig.parameters.keys())
 
@@ -423,7 +436,7 @@ def main():
     set_seed(cfg.SEED)
 
     # --- Load CSV stats and technique->groups map (once) ---
-    # counts = scan_split_counts(cfg.CSV_PATH)
+    counts = scan_split_counts(cfg.CSV_PATH)
     tech2groups_path = PROCESSED_DIR / "ti_groups_techniques.csv"
     tech2groups = load_tech_to_groups_map(tech2groups_path)
 
@@ -564,37 +577,58 @@ def main():
             score_k = val_f1
 
         else:
+            # --- K-FOLD path with safe fallbacks ---
             with cfg.CSV_PATH.open("r", encoding="utf-8") as f:
                 rows = list(csv.DictReader(f))
-            pool_idx = [i for i, r in enumerate(rows) if (r.get("split") or "").strip().lower() in ("train", "val")]
-            test_idx = [i for i, r in enumerate(rows) if (r.get("split") or "").strip().lower() == "test"]
+
+            # Prefer explicit splits if present
+            pool_idx = [i for i, r in enumerate(rows)
+                        if (r.get("split") or "").strip().lower() in ("train", "val")]
+            test_idx = [i for i, r in enumerate(rows)
+                        if (r.get("split") or "").strip().lower() == "test"]
+
+            # Fallback: no train/val in CSV -> use ALL rows for folds, disable test
+            if len(pool_idx) == 0:
+                print(f"[WARN][k={k}] No 'train'/'val' rows in dataset.csv — using ALL rows for k-fold; test set disabled.")
+                pool_idx = list(range(len(rows)))
+                test_idx = []
+
             print(f"[INFO][k={k}] Pool size (train+val rows): {len(pool_idx)} | Test size: {len(test_idx)}")
 
-            rng = np.random.default_rng(cfg.SEED)
-            if cfg.SHUFFLE_POOL:
-                rng.shuffle(pool_idx)
+            # Not enough rows to sustain cfg.N_FOLDS? Downgrade to a random split for this k
+            if len(pool_idx) < cfg.N_FOLDS or cfg.N_FOLDS < 2:
+                print(f"[WARN][k={k}] Not enough rows for {cfg.N_FOLDS} folds; falling back to a random 80/10/10 split for this run.")
+                n = len(pool_idx)
+                if n < 3:
+                    print(f"[WARN][k={k}] Dataset too small for random split; skipping this run.")
+                    continue
 
-            folds = np.array_split(pool_idx, cfg.N_FOLDS)
-            fold_metrics = []
+                idx = np.array(pool_idx)
+                rng = np.random.default_rng(cfg.SEED + k)
+                rng.shuffle(idx)
 
-            # Train per fold with a fresh head
-            for i_fold in range(cfg.N_FOLDS):
-                print(f"\n===== Fold {i_fold+1}/{cfg.N_FOLDS} =====")
-                val_idx = folds[i_fold].tolist()
-                train_idx = [x for j, part in enumerate(folds) if j != i_fold for x in part.tolist()]
+                r_train, r_val, r_test = cfg.SPLIT_RATIOS
+                total = r_train + r_val + r_test
+                r_train, r_val, r_test = [x / total for x in (r_train, r_val, r_test)]
+                n_train = int(round(r_train * n))
+                n_val   = int(round(r_val   * n))
+                n_test  = max(0, n - n_train - n_val)
+
+                train_idx = idx[:n_train].tolist()
+                val_idx   = idx[n_train:n_train + n_val].tolist()
+                test_idx  = idx[n_train + n_val:].tolist()
 
                 train_ds = MultiLabelCSVDataset(cfg.CSV_PATH, split=None, tokenizer=tokenizer,
                                                 label2id=label2id, max_len=cfg.MAX_LEN, index_subset=train_idx)
                 val_ds   = MultiLabelCSVDataset(cfg.CSV_PATH, split=None, tokenizer=tokenizer,
-                                                label2id=label2id, max_len=cfg.MAX_LEN, index_subset=val_idx)
+                                                label2id=label2id, max_len=cfg.MAX_LEN, index_subset=val_idx) if len(val_idx) else None
 
-                model_fold = base_model.__class__.from_pretrained(cfg.MODEL_NAME, config=config_base)
                 use_eval_in_training = len(val_idx) > 0
                 targs = build_training_args(cfg, do_eval_in_training=use_eval_in_training, out_dir=run_dir)
                 callbacks = maybe_early_stopping(use_eval_in_training, cfg, targs) or []
 
                 trainer = Trainer(
-                    model=model_fold,
+                    model=base_model,
                     args=targs,
                     train_dataset=train_ds,
                     eval_dataset=val_ds if use_eval_in_training else None,
@@ -604,42 +638,114 @@ def main():
                     callbacks=callbacks,
                 )
 
-                if getattr(targs, "evaluation_strategy", "no") == "no":
-                    print("[WARN] transformers build lacks in-training eval; will evaluate after training.")
-
                 print("[INFO] Training…")
                 trainer.train()
+                trainer.save_model(str(run_dir))
+                tokenizer.save_pretrained(str(run_dir))
 
-                print("[INFO] Evaluating fold on its validation split…")
-                logits, labels_np, _ = trainer.predict(val_ds)
-                probs = 1 / (1 + np.exp(-logits))
-                preds = (probs >= cfg.THRESHOLD).astype(np.int32)
-                m = _precision_recall_f1(labels_np.astype(np.int32), preds)
-                print("[OK] Fold metrics:", m)
-                fold_metrics.append(m)
+                metrics_json = {}
+                val_f1 = -1.0
+                if val_ds is not None:
+                    print("[INFO] Evaluating on val…")
+                    logits, labels_np, _ = trainer.predict(val_ds)
+                    probs = 1 / (1 + np.exp(-logits))
+                    preds = (probs >= cfg.THRESHOLD).astype(np.int32)
+                    mval = _precision_recall_f1(labels_np.astype(np.int32), preds)
+                    metrics_json["val"] = mval
+                    val_f1 = float(mval.get("f1_micro", -1.0))
 
-            # Average fold metrics
-            avg = {key: float(np.mean([fm[key] for fm in fold_metrics])) for key in fold_metrics[0].keys()}
-            metrics_json[f"cv{cfg.N_FOLDS}_avg"] = avg
-            metrics_json[f"cv{cfg.N_FOLDS}_folds"] = fold_metrics
+                if len(test_idx) > 0:
+                    print("[INFO] Evaluating on test…")
+                    test_ds = MultiLabelCSVDataset(cfg.CSV_PATH, split=None, tokenizer=tokenizer,
+                                                label2id=label2id, max_len=cfg.MAX_LEN, index_subset=test_idx)
+                    targs_noeval = build_training_args(cfg, do_eval_in_training=False, out_dir=run_dir)
+                    trainer_test = Trainer(model=base_model, args=targs_noeval, data_collator=data_collator, tokenizer=tokenizer)
+                    logits, labels_np, _ = trainer_test.predict(test_ds)
+                    probs = 1 / (1 + np.exp(-logits))
+                    preds = (probs >= cfg.THRESHOLD).astype(np.int32)
+                    metrics_json["test"] = _precision_recall_f1(labels_np.astype(np.int32), preds)
 
-            # Save the last trained fold model + tokenizer (representative snapshot for this k)
-            trainer.save_model(str(run_dir))
-            tokenizer.save_pretrained(str(run_dir))
+                if metrics_json:
+                    (run_dir / "metrics.json").write_text(json.dumps(metrics_json, indent=2), encoding="utf-8")
+                    print(f"[OK] Wrote metrics.json -> {run_dir}")
 
-            if len(test_idx) > 0:
-                print("\n[INFO] Evaluating on held-out test split…")
-                test_ds = MultiLabelCSVDataset(cfg.CSV_PATH, split=None, tokenizer=tokenizer,
-                                               label2id=label2id, max_len=cfg.MAX_LEN, index_subset=test_idx)
-                targs_noeval = build_training_args(cfg, do_eval_in_training=False, out_dir=run_dir)
-                trainer_test = Trainer(model=trainer.model, args=targs_noeval, data_collator=data_collator, tokenizer=tokenizer)
-                logits, labels_np, _ = trainer_test.predict(test_ds)
-                probs = 1 / (1 + np.exp(-logits))
-                preds = (probs >= cfg.THRESHOLD).astype(np.int32)
-                metrics_json["test"] = _precision_recall_f1(labels_np.astype(np.int32), preds)
+                score_k = float(metrics_json.get("val", {}).get("f1_micro", -1.0))
+            else:
+                # ---- standard k-fold on the pool_idx ----
+                rng = np.random.default_rng(cfg.SEED)
+                if cfg.SHUFFLE_POOL:
+                    rng.shuffle(pool_idx)
 
-            # Choose score for model selection (avg val f1_micro)
-            score_k = float(metrics_json.get(f"cv{cfg.N_FOLDS}_avg", {}).get("f1_micro", -1.0))
+                folds = np.array_split(pool_idx, cfg.N_FOLDS)
+                if any(len(f) == 0 for f in folds):
+                    print(f"[WARN][k={k}] Some folds are empty; reduce N_FOLDS or increase data. Skipping this k.")
+                    continue
+
+                fold_metrics = []
+                for i_fold in range(cfg.N_FOLDS):
+                    print(f"\n===== Fold {i_fold+1}/{cfg.N_FOLDS} =====")
+                    val_idx = folds[i_fold].tolist()
+                    train_idx = [x for j, part in enumerate(folds) if j != i_fold for x in part.tolist()]
+
+                    train_ds = MultiLabelCSVDataset(cfg.CSV_PATH, split=None, tokenizer=tokenizer,
+                                                    label2id=label2id, max_len=cfg.MAX_LEN, index_subset=train_idx)
+                    val_ds   = MultiLabelCSVDataset(cfg.CSV_PATH, split=None, tokenizer=tokenizer,
+                                                    label2id=label2id, max_len=cfg.MAX_LEN, index_subset=val_idx)
+
+                    model_fold = base_model.__class__.from_pretrained(cfg.MODEL_NAME, config=config_base)
+                    use_eval_in_training = len(val_idx) > 0
+                    targs = build_training_args(cfg, do_eval_in_training=use_eval_in_training, out_dir=run_dir)
+                    callbacks = maybe_early_stopping(use_eval_in_training, cfg, targs) or []
+
+                    trainer = Trainer(
+                        model=model_fold,
+                        args=targs,
+                        train_dataset=train_ds,
+                        eval_dataset=val_ds if use_eval_in_training else None,
+                        tokenizer=tokenizer,
+                        data_collator=data_collator,
+                        compute_metrics=make_compute_metrics(cfg.THRESHOLD) if use_eval_in_training else None,
+                        callbacks=callbacks,
+                    )
+
+                    if getattr(targs, "evaluation_strategy", "no") == "no":
+                        print("[WARN] transformers build lacks in-training eval; will evaluate after training.")
+
+                    print("[INFO] Training…")
+                    trainer.train()
+
+                    print("[INFO] Evaluating fold on its validation split…")
+                    logits, labels_np, _ = trainer.predict(val_ds)
+                    probs = 1 / (1 + np.exp(-logits))
+                    preds = (probs >= cfg.THRESHOLD).astype(np.int32)
+                    m = _precision_recall_f1(labels_np.astype(np.int32), preds)
+                    print("[OK] Fold metrics:", m)
+                    fold_metrics.append(m)
+
+                # Average fold metrics
+                avg = {key: float(np.mean([fm[key] for fm in fold_metrics])) for key in fold_metrics[0].keys()}
+                metrics_json = {f"cv{cfg.N_FOLDS}_avg": avg, f"cv{cfg.N_FOLDS}_folds": fold_metrics}
+
+                # Save the last trained fold model + tokenizer
+                trainer.save_model(str(run_dir))
+                tokenizer.save_pretrained(str(run_dir))
+
+                # Optional held-out test (only if you had it)
+                if len(test_idx) > 0:
+                    print("\n[INFO] Evaluating on held-out test split…")
+                    test_ds = MultiLabelCSVDataset(cfg.CSV_PATH, split=None, tokenizer=tokenizer,
+                                                label2id=label2id, max_len=cfg.MAX_LEN, index_subset=test_idx)
+                    targs_noeval = build_training_args(cfg, do_eval_in_training=False, out_dir=run_dir)
+                    trainer_test = Trainer(model=trainer.model, args=targs_noeval, data_collator=data_collator, tokenizer=tokenizer)
+                    logits, labels_np, _ = trainer_test.predict(test_ds)
+                    probs = 1 / (1 + np.exp(-logits))
+                    preds = (probs >= cfg.THRESHOLD).astype(np.int32)
+                    metrics_json["test"] = _precision_recall_f1(labels_np.astype(np.int32), preds)
+
+                (run_dir / "metrics.json").write_text(json.dumps(metrics_json, indent=2), encoding="utf-8")
+                print(f"[OK] Wrote metrics.json -> {run_dir}")
+                score_k = float(metrics_json.get(f"cv{cfg.N_FOLDS}_avg", {}).get("f1_micro", -1.0))
+
 
         # Save metrics for this run & maybe update global best
         if metrics_json:

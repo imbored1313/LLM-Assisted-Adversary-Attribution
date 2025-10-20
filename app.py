@@ -1,106 +1,65 @@
 from flask import Flask, render_template, request, make_response, jsonify
 import pandas as pd
-from matching import (
-    validate_ttps,
-    match_ttps,
-)
-from report_generator import (
-    analyze_TTP,
-    load_mitigations_summary,
-    parse_ai_response,
-    generate_word_report,
-    load_filtered_mitigations,
-    summarize_mitigations
-)
+from typing import List, Optional
 from datetime import datetime
 from collections import defaultdict
-from technique_labels import extract_techniques  # import the extractor
+import importlib.util
 import io
 import re
-import subprocess
-import sys
+from typing import Iterable
 from pathlib import Path
-
-# ============================================
-# Paths / App
-# ============================================
-BASE_DIR = Path(__file__).resolve().parent
-SRC_PATH = BASE_DIR / "src"  # ✅ src is inside ICT3214-Sec-Analytics
-sys.path.insert(0, str(SRC_PATH))
-app = Flask(__name__)
-
-DATA_DIR = BASE_DIR / "Data" / "mapped"
-EXCEL_PATH = BASE_DIR / "Data" / "excel" / "enterprise-attack-v17.1-techniques.xlsx"
-MAPPING_CSV = BASE_DIR / "techniques_mapping.csv"
-
-# Idempotent mitigations runner
-def _run_mitigations_and_get_csv() -> Path:
-    """
-    Run mitigations.py synchronously ONCE and return the output CSV path:
-      Data/mitigations/mitigations.csv
-    """
-    script = BASE_DIR / "mitigations.py"
-    out_csv = BASE_DIR / "Data" / "mitigations" / "mitigations.csv"
-
-    # Only run if the CSV doesn't exist (idempotent)
-    if out_csv.exists():
-        print(f"[SKIP] mitigations.py — up to date: {out_csv}")
-        return out_csv
-
-    print(f"[RUN] mitigations.py — generating: {out_csv}")
-    res = subprocess.run([sys.executable, str(script)], cwd=str(BASE_DIR))
-    if res.returncode != 0:
-        raise RuntimeError(f"mitigations.py failed with exit code {res.returncode}")
-    if not out_csv.exists():
-        raise FileNotFoundError(f"Expected mitigations CSV not found at: {out_csv}")
-    return out_csv
-
-# ---- Extra project roots (as in your original)
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))  # make common/, data/, models/ importable
-from paths.paths import (  # type: ignore  # noqa: E402
-    DATA_ROOT, RAW_DIR,
-    EXTRACTED_PDFS_DIR,
-    PROCESSED_DIR,
-    DATASCRIPT_ROOT,
-    MODELS_ROOT,
-    EXPERIMENTS_ROOT,
+import subprocess, sys
+import os, tempfile
+import json
+from threading import Thread, Lock
+import time
+# =======================================================
+# Project-relative paths
+# =======================================================
+from project_paths import (
+    PROJECT_ROOT, DATA_ROOT, EXPERIMENTS_ROOT, SRC_ROOT, MODELS_ROOT,SCRIPTS_DIR,
+    RAW_DIR, PROCESSED_DIR, EXTRACTED_PDFS_DIR,
+    MAPPED_DIR, EXCEL_DIR, MITIGATIONS_DIR,
+    ATTACK_STIX_DIR,PDFS_DIR,RULES_DIR,EXTRACT_SCRIPT,ATTACK_SCRIPT,MAP_IOCS_SCRIPT,
+    BUILD_DATASET_SCRIPT,MITIGATIONS_SCRIPT,
+    GROUP_TTPS_DETAIL_CSV,MATCHING_SCRIPT,REPORT_GENERATION_SCRIPT,TECHNIQUE_LABELS_SCRIPT,
+    TRAIN_ROBERTA_SCRIPT,PREDICT_SCRIPT,BEST_MODEL_DIR,
+    MAPPING_CSV,MITIGATIONS_CSV,EXCEL_ATTACK_TECHS,
+    EXTRACTED_IOCS_CSV,TI_GROUPS_TECHS_CSV,DATASET_CSV,LABELS_TXT,GROUP_TTPS_DETAIL_CSV,RANKED_GROUPS_CSV,
+     project_path,ensure_dir_tree,add_src_to_syspath
 )
+app = Flask(__name__)
+sys.path.insert(0, str(SRC_ROOT))  
 
-# ---- Expected inputs/outputs per step ----
-PDFS_IN_DIR         = RAW_DIR / "pdfs"
-EXTRACTED_IOCS_CSV  = PROCESSED_DIR / "extracted_iocs.csv"
-TI_GROUPS_TECHS_CSV = PROCESSED_DIR / "ti_groups_techniques.csv"
-DATASET_CSV         = PROCESSED_DIR / "dataset.csv"
-LABELS_TXT          = PROCESSED_DIR / "labels.txt"
 
-# Scripts (relative to repo root)
-EXTRACT_SCRIPT       = DATASCRIPT_ROOT / "extract_pdfs.py"
-ATTACK_SCRIPT        = DATASCRIPT_ROOT / "enterprise_attack.py"
-BUILD_DATASET_SCRIPT = DATASCRIPT_ROOT / "build_dataset.py"
-TRAIN_ROBERTA_SCRIPT = MODELS_ROOT     / "train_roberta.py"
-PREDICT_SCRIPT       = MODELS_ROOT     / "predict_roberta.py"
+def _import_from_path(path, module_name):
+    spec = importlib.util.spec_from_file_location(module_name, str(path))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
-# Trained model
-BEST_MODEL_DIR = MODELS_ROOT / "best_roberta_for_predict"
-BEST_REQUIRED = [
-    BEST_MODEL_DIR / "config.json",
-    BEST_MODEL_DIR / "tokenizer.json",
-    BEST_MODEL_DIR / "id2label.json",
-]
+# load the three script modules by file path
+matching           = _import_from_path(MATCHING_SCRIPT, "matching")
+technique_labels   = _import_from_path(TECHNIQUE_LABELS_SCRIPT, "technique_labels")
+report_generator   = _import_from_path(REPORT_GENERATION_SCRIPT, "report_generator")
 
-def output_dir_for_folds(n_folds: int, model_slug: str = "roberta_base"):
-    return EXPERIMENTS_ROOT / f"{n_folds}foldruns" / model_slug
+# expose the functions you need
+validate_ttps         = matching.validate_ttps
+match_ttps            = matching.match_ttps
 
-# Global caches
-LAST_RESULTS = {}
+extract_techniques    = technique_labels.extract_techniques
+
+analyze_TTP           = report_generator.analyze_TTP
+parse_ai_response     = report_generator.parse_ai_response
+load_filtered_mitigations = report_generator.load_filtered_mitigations
+summarize_mitigations     = report_generator.summarize_mitigations
+
+# Cache
+LAST_RESULTS = {} #Global
 LAST_RESULTS_RULE = {}
 LAST_RESULTS_ROBERTA = {}
 
-# ============================================
-# Small helpers
-# ============================================
-def _ensure_score_and_rank(df: pd.DataFrame) -> pd.DataFrame:
+def _ensure_score_and_rank_rule(df: pd.DataFrame) -> pd.DataFrame:
     """
     Ensure df has numeric 'score' and 'rank' columns.
     """
@@ -126,6 +85,30 @@ def _ensure_score_and_rank(df: pd.DataFrame) -> pd.DataFrame:
         df["rank"] = (-df["score"]).rank(method="first").astype(int)
 
     return df
+#For ROBERTA
+def _ensure_score_and_rank(df: pd.DataFrame) -> pd.DataFrame:
+    import numpy as np
+    if df is None or df.empty:
+        return df
+
+    # include group_score here
+    candidates = ["score", "group_score", "prob", "probability", "confidence", "logit", "logprob"]
+    src = next((c for c in candidates if c in df.columns), None)
+
+    if src is None:
+        if "rank" in df.columns:
+            df["score"] = pd.to_numeric(df["rank"], errors="coerce")
+            df["score"] = 1.0 / (1.0 + df["score"].fillna(df["score"].max() or 1))
+        else:
+            n = len(df)
+            df["score"] = np.linspace(1.0, 0.0, n, endpoint=False)
+    else:
+        df["score"] = pd.to_numeric(df[src], errors="coerce").fillna(0.0)
+
+    if "rank" not in df.columns or df["rank"].isna().all():
+        df["rank"] = (-df["score"]).rank(method="first").astype(int)
+
+    return df
 
 def run(cmd: list[str], cwd: Path | None = None) -> None:
     print(f"\n$ {' '.join(map(str, cmd))}")
@@ -133,170 +116,278 @@ def run(cmd: list[str], cwd: Path | None = None) -> None:
     if res.returncode != 0:
         raise SystemExit(res.returncode)
 
-def needs_run(outputs: list[Path], force: bool) -> bool:
-    return force or not all(p.exists() for p in outputs)
+def needs_run(outputs: Iterable[Path], inputs: Iterable[Path] = ()) -> bool:
+    outs = list(outputs)
+    if not outs or any(not p.exists() for p in outs):
+        return True  # missing outputs => run
 
-def ensure_dirs():
-    for p in [DATA_ROOT, RAW_DIR, EXTRACTED_PDFS_DIR, PROCESSED_DIR, MODELS_ROOT, EXPERIMENTS_ROOT]:
-        p.mkdir(parents=True, exist_ok=True)
+    # If any input (or the script itself) is newer than any output => run
+    out_mtime = min(p.stat().st_mtime for p in outs)
+    ins = [p for p in inputs if p is not None and Path(p).exists()]
+    if not ins:
+        return False
+    return max(Path(p).stat().st_mtime for p in ins) > out_mtime
 
-# =========================
-# STRICT group → TTP lookup
-# =========================
-def _collect_group_ttps(matched_df: pd.DataFrame) -> list[str]:
-    """
-    Extract unique MITRE technique IDs (e.g. T1110, T1110.003) from
-    Data/mapped/group_ttps_detail.csv for the matched groups.
-    Falls back gracefully if columns differ between datasets.
-    """
-    map_path = BASE_DIR / "Data" / "mapped" / "group_ttps_detail.csv"
-    if not map_path.exists():
-        print(f"[ERROR] {map_path} not found.")
-        return []
+def _atomic_to_csv(df, path: str):
+    d = Path(path).parent
+    d.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", delete=False, dir=d, newline="", suffix=".tmp") as tmp:
+        tmp_name = tmp.name
+        df.to_csv(tmp, index=False)
+    os.replace(tmp_name, path)  # atomic on POSIX & Windows
 
-    try:
-        g = pd.read_csv(map_path)
-    except Exception as e:
-        print(f"[ERROR] Failed reading {map_path}: {e}")
-        return []
+#For mitigations
 
-    # Validate required minimal columns
-    expected_cols = {"group_name", "group_id", "matched_exact", "matched_root_only"}
-    missing = expected_cols - set(g.columns.str.lower())
-    if missing:
-        print(f"[WARN] group_ttps_detail.csv missing columns: {missing}; using best-effort extraction.")
-
-    # Normalization helpers
-    import re
-    id_re = re.compile(r"\bT\d{4}(?:\.\d{3})?\b", re.IGNORECASE)
-
-    def _extract_ttps(text: str) -> list[str]:
-        if not isinstance(text, str):
-            return []
-        found = id_re.findall(text)
-        return [f"T{f[1:]}" if not f.startswith("T") else f.upper() for f in found]
-
-    # Collect TTPs from relevant columns
-    all_ttps = []
-    for col in ["matched_exact", "matched_root_only"]:
-        if col in g.columns:
-            g[col] = g[col].fillna("")
-            for entry in g[col].tolist():
-                all_ttps.extend(_extract_ttps(entry))
-
-    # Remove duplicates + sort by numeric order
-    def _sort_key(tid: str):
-        m = re.match(r"T(\d{4})(?:\.(\d{3}))?", tid)
+ID_RE = re.compile(r"\bT\d{4}(?:\.\d{3})?\b", re.IGNORECASE)
+def _norm_ids(items: List[str]) -> List[str]:
+    out = []
+    for x in items:
+        if isinstance(x, str):
+            out.extend(m.upper() for m in ID_RE.findall(x))
+    def _key(tid: str):
+        m = re.match(r"T(\d{4})(?:\.(\d{3}))?$", tid)
         return (int(m.group(1)), int(m.group(2) or 999)) if m else (9999, 999)
+    return sorted(set(out), key=_key)
 
-    uniq_ttps = sorted(set(all_ttps), key=_sort_key)
-    print(f"[DEBUG] Extracted {len(uniq_ttps)} unique technique IDs from group_ttps_detail.csv")
-    return uniq_ttps
-
-# ============================================
-# Index & Workflow
-# ============================================
-@app.route('/')
-def index():
-    try:
-        # Always regenerate latest mapping from Excel
-        extract_techniques(EXCEL_PATH, MAPPING_CSV)
-
-        # Load mapping: id, name, label
-        df_map = pd.read_csv(MAPPING_CSV)
-
-        # Group main + sub-techniques
-        ttp_dict = defaultdict(list)
-        for tid, label in zip(df_map["id"], df_map["label"]):
-            root = tid.split(".")[0]
-            if "." in tid:
-                ttp_dict[root].append((tid, label))
+def _parse_id_list(value) -> List[str]:
+    # Handles list, JSON string, comma string, or plain string with T-IDs
+    if isinstance(value, list):
+        strs = [str(v) for v in value]
+    elif isinstance(value, str):
+        s = value.strip()
+        try:
+            parsed = json.loads(s)
+            if isinstance(parsed, list):
+                strs = [str(v) for v in parsed]
             else:
-                ttp_dict.setdefault(tid, [])
+                strs = [s]
+        except Exception:
+            # Comma-separated or raw text with IDs
+            strs = [p.strip() for p in s.split(",")] if "," in s else [s]
+    else:
+        strs = []
+    return _norm_ids(strs)
 
-        # Build grouped list for dropdown
-        id_to_label = dict(zip(df_map["id"], df_map["label"]))
-        grouped_ttps = []
-        for root in sorted(ttp_dict.keys()):
-            root_label = id_to_label.get(root, root)
-            subs = [lbl for _, lbl in sorted(ttp_dict[root], key=lambda x: x[0])]
-            grouped_ttps.append((root_label, subs))
+def collect_top_group_ttps(
+    df: pd.DataFrame,
+    group_ttps_detail_csv: Path,
+    use_ml: bool = False,
+    tech_lookup_csv: Optional[Path] = None,  # optional: map technique_name -> technique_id
+) -> List[str]:
+    """
+    Unified group → TTPs:
+      - If use_ml and df has 'technique_id_list': return those IDs (normalized).
+      - Else fall back to rule-based mapping via group_ttps_detail_csv
+        using 'matched_exact'/'matched_root_only' for the top-scoring group.
+      - If only 'technique_name' exists (ML), optionally map via tech_lookup_csv.
+    """
+    if df is None or df.empty:
+        print("[WARN] Empty df"); return []
+    if not group_ttps_detail_csv.exists():
+        print("[WARN] Missing mapping CSV"); return []
 
-        # Debug info
-        print("\n================ TECHNIQUE SUMMARY ================")
-        print(f"Total techniques loaded: {len(df_map)}")
-        print(f"Total root techniques: {len(ttp_dict)}")
-        print("Example entries:")
-        print(df_map.head(5))
-        print("===================================================\n")
+    # top row by score
+    top = df.sort_values("score", ascending=False).iloc[0]
+    top_name = str(top.get("group_name", "")).strip().lower()
+    top_id   = str(top.get("group_id", "")).strip().lower()
 
-        return render_template('index.html', grouped_ttps=grouped_ttps)
+    # -------- ML path --------
+    if use_ml:
+        # Prefer explicit technique IDs
+        if "technique_id_list" in df.columns:
+            ids = _parse_id_list(top.get("technique_id_list", ""))
+            if ids:
+                return ids
 
+        # Optional: names → IDs if provided
+        if tech_lookup_csv and tech_lookup_csv.exists() and "technique_name" in df.columns:
+            try:
+                lut = pd.read_csv(tech_lookup_csv)
+                lut.columns = [c.strip().lower() for c in lut.columns]
+                if {"technique_id","technique_name"}.issubset(lut.columns):
+                    name = str(top.get("technique_name","")).strip().lower()
+                    ids = lut.loc[lut["technique_name"].str.lower()==name, "technique_id"].astype(str).tolist()
+                    ids = _norm_ids(ids)
+                    if ids:
+                        return ids
+            except Exception as e:
+                print(f"[WARN] tech_lookup read failed: {e}")
+
+        # Last resort: extract T-IDs from technique_name text itself
+        if "technique_name" in df.columns:
+            ids = _norm_ids([str(top.get("technique_name",""))])
+            if ids:
+                return ids
+        # If ML path yields nothing, we fall through to rule-based as a safety net.
+
+    # -------- Rule-based fallback --------
+    try:
+        gmap = pd.read_csv(group_ttps_detail_csv)
     except Exception as e:
-        return render_template('error.html', error=str(e))
+        print(f"[ERROR] Failed reading {group_ttps_detail_csv}: {e}")
+        return []
+    gmap = gmap.copy()
+    gmap.columns = [c.strip().lower() for c in gmap.columns]
+    if "group_name" not in gmap.columns or "group_id" not in gmap.columns:
+        print("[ERROR] mapping missing 'group_name'/'group_id'"); return []
 
-@app.route('/workflow')
-def workflow():
-    return render_template('workflow.html')
+    mask = pd.Series(False, index=gmap.index)
+    if top_id:
+        mask = mask | (gmap["group_id"].astype(str).str.lower() == top_id)
+    if top_name:
+        mask = mask | (gmap["group_name"].astype(str).str.lower() == top_name)
+    gsel = gmap.loc[mask]
+    if gsel.empty:
+        print(f"[INFO] No mapping rows for {top_name or top_id}"); return []
 
+    cols = [c for c in ("matched_exact","matched_root_only") if c in gsel.columns]
+    vals = []
+    for c in cols:
+        vals.extend(gsel[c].fillna("").astype(str).tolist())
+
+    ids = _norm_ids(vals)
+    return ids
+
+def _blank_analysis():
+    return {
+        "summary": "",
+        "table": "",
+        "attacker": "",
+        "mitigation": "",
+        "suggestion": "",
+    }
 # ============================================
 # Rule-based flow helper
 # ============================================
+
+def _blank_analysis():
+    return {
+        "summary": "",
+        "table": "",
+        "attacker": "",
+        "mitigation": "",
+        "suggestion": "",
+    }
+
 def _run_rule_match_flow(ttps: list[str]) -> dict:
-    matched_df = match_ttps(ttps, DATA_DIR).copy()
-    matched_df = _ensure_score_and_rank(matched_df)
+    #     """
+#     Rule-based threat attribution flow:
+#     - Runs rule-based TTP matching
+#     - Extracts per-group associated TTPs for display
+#     - Filters mitigations to only those related to top group's TTPs
+#     - Generates parsed analysis + optional DOCX report
+#     """
+    LAST_RESULTS_ROBERTA.clear()
+
+    matched_df = match_ttps(ttps, MAPPED_DIR).copy()
+    matched_df = _ensure_score_and_rank_rule(matched_df)
+
     if "rank" in matched_df.columns and matched_df["rank"].notna().any():
         matched_df = matched_df.sort_values(by=["rank", "score"], ascending=[True, False])
     else:
         matched_df = matched_df.sort_values(by="score", ascending=False)
+
+        # =====================================================
+    # ✅ Remove unranked duplicates (rank = NaN) per group
+    # =====================================================
+    if "group_id" in matched_df.columns:
+        ranked_ids = matched_df.loc[matched_df["rank"].notna(), "group_id"].unique()
+        # If a group has both ranked and unranked rows, drop the unranked ones
+        matched_df = matched_df[
+            ~((matched_df["group_id"].isin(ranked_ids)) & (matched_df["rank"].isna()))
+        ]
+
     top3_df = matched_df.head(3)
-
     matched_df.to_csv("matched_groups_rule.csv", index=False)
-    top3_df.to_csv("matched_top3_rule.csv", index=False)
-    pd.DataFrame({"TTP": ttps}).to_csv("inputted_ttps_rule.csv", index=False)
+    pd.DataFrame({"TTP": ttps}).to_csv("inputted_ttps.csv", index=False)
 
-    # Mitigations (idempotent) + GPT analysis
-    mit_csv_path = _run_mitigations_and_get_csv()
+    # ======= EARLY EXIT: no matches / no TTPs =======
+    no_matches = matched_df.empty or top3_df.empty
+    if no_matches:
+        # Ensure the UI sees blank sections and no attachments
+        return {
+            "ttps": ttps,
+            "matched_full_df": matched_df,
+            "matched_top3": [],               # no rows for table
+            "analysis": _blank_analysis(),    # all fields empty
+            "doc_path": None,                 # no DOCX
+            "mitigations_csv": None,          # no CSV
+            "has_matches": False,             # template guard
+        }
+
+    mit_csv_path = MITIGATIONS_CSV
     gpt_response = analyze_TTP(ttps, matched_df, mitigations_csv=str(mit_csv_path))
     parsed = parse_ai_response(gpt_response)
 
-    # Filter mitigations for the matched groups' techniques
-    # 1) get group-based TTPs (strict CSV mapping)
-    group_ttps = _collect_group_ttps(matched_df)
+    def _extract_ttps_from_text(s: str):
+        if not isinstance(s, str): return []
+        return re.findall(r"\bT\d{4}(?:\.\d{3})?\b", s.upper())
 
-    # 2) fallback ONLY if none found
-    if not group_ttps:
-      print("[INFO] No group-mapped TTPs found; falling back to inputted TTPs.")
-      group_ttps = list({t.strip().upper() for t in ttps if t})
+    combined_ttps_list = []
+    for _, row in matched_df.iterrows():
+        ttps_found = set()
+        for col in ["matched_exact", "matched_root_only"]:
+            if col in row and isinstance(row[col], str):
+                ttps_found.update(_extract_ttps_from_text(row[col]))
+        combined_ttps_list.append(", ".join(sorted(ttps_found)) if ttps_found else "—")
 
-    # 3) filter mitigations using those TTPs (includes sub-techniques)
-    mit_filtered = load_filtered_mitigations(str(mit_csv_path), group_ttps)
-    if mit_filtered.empty:
-        parsed["mitigation"] = "No mitigations found for these techniques."
+    matched_df["combined_ttps"] = combined_ttps_list
+    top3_df = matched_df.head(3).copy()
+
+    # top group ttps for mitigation filter
+    top_rank_row = matched_df.loc[matched_df["rank"] == matched_df["rank"].min()].head(1)
+
+    top_group_ttps = set()
+    if not top_rank_row.empty:
+       for col in ["matched_exact", "matched_root_only"]:
+         if col in top_rank_row.columns:
+            val = top_rank_row.iloc[0][col]
+            if isinstance(val, str):
+                ttps_in_col = re.findall(r"\bT\d{4}(?:\.\d{3})?\b", val.upper())
+                top_group_ttps.update(ttps_in_col)
+            elif isinstance(val, (list, set)):
+                top_group_ttps.update([t.upper() for t in val])
+
+    top_group_ttps = sorted(top_group_ttps)
+    print(f"[DEBUG] Mitigations will use {len(top_group_ttps)} TTPs from the top-ranked group only:")
+    print(f"[DEBUG] {top_group_ttps}")
+
+    mit_filtered = load_filtered_mitigations(str(mit_csv_path), top_group_ttps)
+
+    mit_rule_path = PROJECT_ROOT / "mitigations_rule_top.csv"
+    if not mit_filtered.empty:
+        mit_filtered = mit_filtered.drop_duplicates(
+            subset=["target id", "target name", "mapping description"], keep="first"
+        )
+        parsed["mitigation"] = summarize_mitigations(mit_filtered.to_dict(orient="records"))
+        _atomic_to_csv(mit_filtered, mit_rule_path)
+        mit_for_docx = str(mit_rule_path)
     else:
-        mit_dicts = mit_filtered.to_dict(orient="records")
-        parsed["mitigation"] = summarize_mitigations(mit_dicts)
-    
-    # Try generating docx (non-fatal)
-    try:
-        out_path = generate_word_report(gpt_response, ttps, mitigations_csv=str(mit_csv_path))
-        if not out_path:
-            out_path = "threat_report_rule.docx"
-    except Exception as e:
-        print("[WARN] Rule-based DOCX generation failed:", e)
-        out_path = None
+        parsed["mitigation"] = ""
+        mit_for_docx = None
+        try:
+            if mit_rule_path.exists():
+                mit_rule_path.unlink()
+        except Exception as e:
+            print(f"[WARN] Could not remove stale {mit_rule_path}: {e}")
 
+    out_path = None
     return {
         "ttps": ttps,
         "matched_full_df": matched_df,
         "matched_top3": top3_df.to_dict(orient="records"),
         "analysis": parsed,
         "doc_path": out_path,
+        "mitigations_csv": mit_for_docx,
+        "has_matches": True,
     }
 
 # ============================================
 # RoBERTa flow helper
 # ============================================
+def _save_roberta_traces(df_ml):
+    _atomic_to_csv(df_ml, "matched_groups_roberta.csv")
+
 def _predict_with_module(payload: dict):
     """
     Try importing predict_roberta.py and using its functions directly.
@@ -319,11 +410,7 @@ def _predict_with_module(payload: dict):
             attack_ids=payload.get("attacks") or [],
             free_text=payload.get("text") or None,
         )
-        preds = pr.predict(
-            text=text,
-            threshold=float(payload.get("threshold", 0.5)),
-            top_k=int(payload.get("top_k", 10)),
-        )
+        preds = pr.predict(text=text, threshold=float(payload.get("threshold", 0.5)), top_k=int(payload.get("top_k", 10)))
         attack_rows = pr.load_attack_index()
 
         srcs = pr.resolve_sources_from_inputs(
@@ -358,15 +445,40 @@ def _predict_with_module(payload: dict):
                 args += [flag, str(v)]
         if payload.get("text"):
             args += ["--text", payload["text"]]
-        args += ["--threshold", str(payload.get("threshold", 0.5)), "--top-k", str(payload.get("top_k", 10))]
+        args += ["--threshold", str(payload.get("threshold", 0.5)),
+                 "--top-k", str(payload.get("top_k", 10))]
 
         res = subprocess.run(args, capture_output=True, text=True)
         if res.returncode != 0:
+            print(res.stdout)
+            print(res.stderr)
             raise RuntimeError(res.stderr or "predict_roberta failed")
 
-        return {"raw": res.stdout}
-
+        # NEW: try to parse JSON from CLI and normalize the shape
+        try:
+            payload = json.loads(res.stdout)
+            if isinstance(payload, dict) and "groups" in payload:
+                return payload
+            # allow older CLIs: maybe the top-level is a list
+            if isinstance(payload, list):
+                return {"groups": payload}
+            # last resort: empty groups
+            return {"groups": []}
+        except Exception:
+            print("[WARN] CLI output was not JSON; returning empty groups.")
+            return {"groups": []}
+        
 def _run_roberta_flow(ttps: list[str]) -> dict:
+    """
+    RoBERTa-based threat attribution flow:
+    - Uses ML model predictions for group ranking
+    - Extracts per-group associated TTPs (from matched_exact/root_only/technique_id_list)
+    - Filters mitigations based on top group's TTPs
+    - Generates parsed analysis and DOCX report
+    """
+    LAST_RESULTS_RULE.clear()
+
+    # 1️⃣ Run the RoBERTa predictor
     ml = _predict_with_module({
         "id": "from_ttps",
         "attacks": ttps,
@@ -378,49 +490,83 @@ def _run_roberta_flow(ttps: list[str]) -> dict:
         raise RuntimeError("RoBERTa returned no groups. Check model artifacts and labels.")
     df_ml = pd.DataFrame(group_rows)
 
+    # Normalize column names
     if "group" in df_ml.columns and "group_name" not in df_ml.columns:
         df_ml.rename(columns={"group": "group_name"}, inplace=True)
 
     df_ml = _ensure_score_and_rank(df_ml)
     df_ml.sort_values("score", ascending=False, inplace=True)
-    top3_df = df_ml.head(3)
+    _save_roberta_traces(df_ml)
+    top3_df = df_ml.head(3).drop(columns=["origin"], errors="ignore")
+    # ======= EARLY EXIT: no matches / no TTPs =======
+    no_matches = df_ml.empty or top3_df.empty
+    if no_matches:
+        # Ensure the UI sees blank sections and no attachments
+        return {
+            "ttps": ttps,
+            "matched_full_df": df_ml,
+            "matched_top3": [],               # no rows for table
+            "analysis": _blank_analysis(),    # all fields empty
+            "doc_path": None,                 # no DOCX
+            "mitigations_csv": None,          # no CSV
+            "has_matches": False,             # template guard
+        }
 
-    # Keep file names distinct for clarity
-    df_ml.to_csv("matched_groups_roberta.csv", index=False)
-    top3_df.to_csv("matched_top3_roberta.csv", index=False)
-    pd.DataFrame({"TTP": ttps}).to_csv("inputted_ttps_rule.csv", index=False)  # shared for report_generator
-
-    # Mitigations (idempotent) + GPT analysis
-    mit_csv_path = _run_mitigations_and_get_csv()
+    # 2️⃣ GPT-based analysis
+    mit_csv_path = MITIGATIONS_CSV
     gpt_response = analyze_TTP(ttps, df_ml, mitigations_csv=str(mit_csv_path))
     parsed = parse_ai_response(gpt_response)
 
-    # Filter mitigations for the matched groups' techniques
-    # 1) get group-based TTPs (strict CSV mapping)
-    group_ttps = _collect_group_ttps(df_ml)
+    # =========================================================
+    # 🧩 Per-group Combined TTPs — Extract for EACH group
+    # =========================================================
+    def _extract_ttps_from_text(s: str):
+        if not isinstance(s, str):
+            return []
+        return re.findall(r"\bT\d{4}(?:\.\d{3})?\b", s.upper())
 
-    # 2) fallback ONLY if none found
-    if not group_ttps:
-      print("[INFO] No group-mapped TTPs found; falling back to inputted TTPs.")
-      group_ttps = list({t.strip().upper() for t in ttps if t})
+    combined_ttps_list = []
+    for _, row in df_ml.iterrows():
+        ttps_found = set()
+        for col in ["matched_exact", "matched_root_only", "technique_id_list"]:
+            if col in row and isinstance(row[col], str):
+                ttps_found.update(_extract_ttps_from_text(row[col]))
+        combined_ttps_list.append(", ".join(sorted(ttps_found)) if ttps_found else "—")
 
-    # 3) filter mitigations using those TTPs (includes sub-techniques)
-    mit_filtered = load_filtered_mitigations(str(mit_csv_path), group_ttps)
-    if mit_filtered.empty:
-        parsed["mitigation"] = "No mitigations found for these techniques."
+    df_ml["combined_ttps"] = combined_ttps_list
+    top3_df = df_ml.head(3).copy()
+
+    # =========================================================
+    # 🛡️ Mitigations — use top group's extracted TTPs
+    # =========================================================
+    # 🛡️ Mitigations — use only the rank-1 group's TTPs
+    top_rank_row = df_ml.loc[df_ml["rank"] == df_ml["rank"].min()].head(1)
+
+    if not top_rank_row.empty and "combined_ttps" in top_rank_row.columns:
+        top_group_ttps = _extract_ttps_from_text(top_rank_row.iloc[0]["combined_ttps"])
     else:
-        mit_dicts = mit_filtered.to_dict(orient="records")
-        parsed["mitigation"] = summarize_mitigations(mit_dicts)
+        top_group_ttps = []
 
-    # Try generating docx (non-fatal)
-    try:
-        out_path = generate_word_report(gpt_response, ttps, mitigations_csv=str(mit_csv_path))
-        if not out_path:
-            out_path = "threat_report_roberta.docx"
-    except Exception as e:
-        print("[WARN] RoBERTa DOCX generation failed:", e)
-        out_path = None
+    mit_filtered = load_filtered_mitigations(str(mit_csv_path), top_group_ttps)
 
+    if not top_group_ttps:
+        print("[INFO] No top-group TTPs resolved for ROBERTA; skipping mitigations (no group mapping).")
+
+    # 3️⃣ Deduplicate + summarize mitigations
+    if not mit_filtered.empty:
+        mit_filtered = mit_filtered.drop_duplicates(
+            subset=["target id", "target name", "mapping description"],
+            keep="first"
+        )
+        parsed["mitigation"] = summarize_mitigations(mit_filtered.to_dict(orient="records"))
+        _atomic_to_csv(mit_filtered, "mitigations_roberta_top.csv")
+        mit_for_docx = "mitigations_roberta_top.csv"
+    else:
+        parsed["mitigation"] = "No mitigations found for these techniques."
+        mit_for_docx = None
+    out_path = None
+
+    # 5️⃣ Return structured result
     return {
         "ttps": ttps,
         "matched_full_df": df_ml,
@@ -429,36 +575,435 @@ def _run_roberta_flow(ttps: list[str]) -> dict:
         "doc_path": out_path,
     }
 
+# ---------------- Progress state ----------------
+PROG = {
+    "running": False,
+    "pct": 0,
+    "steps": [],   # list of {"name": str, "state": "pending|running|done|skip|error", "msg": str}
+    "msg": "",
+    "indeterminate": False,  
+}
+_lock = Lock()
+
+def _init_progress(step_names):
+    with _lock:
+        PROG["running"] = True
+        PROG["pct"] = 0
+        PROG["msg"] = "Starting…"
+        PROG["steps"] = [{"name": n, "state": "pending", "msg": ""} for n in step_names]
+        PROG["indeterminate"] = False
+
+def _set_step_state(i, state, msg=""):
+    with _lock:
+        PROG["steps"][i]["state"] = state
+        PROG["steps"][i]["msg"] = msg
+        done = sum(1 for s in PROG["steps"] if s["state"] in ("done", "skip"))
+        total = len(PROG["steps"]) or 1
+        PROG["pct"] = int(100 * done / total)
+        PROG["msg"] = msg or PROG["msg"]
+
+def _finish_progress():
+    with _lock:
+        PROG["running"] = False
+        if PROG["pct"] < 100:
+            # leave partial percentage on error
+            pass
+# --- Progress helpers (keep your PROG/_init_progress/_set_step_state/_finish_progress) ---
+
+def _step_index(step_name: str) -> int:
+    return next(i for i, s in enumerate(PROG["steps"]) if s["name"] == step_name)
+
+# Display names used in the UI + bound to the step functions below
+STEP_NAMES = {
+    "extract":   "Extract PDFs → IOC CSV",
+    "enterprise":"Build enterprise ATT&CK tables",
+    "map":       "Map IOCs → ATT&CK",
+    "dataset":   "Build dataset & labels",
+    "mitigate":  "Build mitigations",
+    "train":     "Train RoBERTa (if missing)",
+}
+
+# =======================================================
+# Pipeline steps (extract pdf → extract stix → build → train)
+# =======================================================
+def step_enterprise_attack():
+    name = STEP_NAMES["enterprise"]
+    i = _step_index(name)
+    _set_step_state(i, "running", "Building enterprise ATT&CK lookup tables…")
+
+    outputs = [TI_GROUPS_TECHS_CSV]
+    inputs  = [ATTACK_SCRIPT]  # add STIX sources if you’ve got them
+    if not needs_run(outputs, inputs=inputs):
+        _set_step_state(i, "skip", f"Up to date: {TI_GROUPS_TECHS_CSV.name}")
+        return
+
+    run([sys.executable, str(ATTACK_SCRIPT)])
+    if not TI_GROUPS_TECHS_CSV.exists():
+        _set_step_state(i, "error", f"Missing: {TI_GROUPS_TECHS_CSV}")
+        raise FileNotFoundError(f"Expected {TI_GROUPS_TECHS_CSV}")
+    _set_step_state(i, "done", "ATT&CK tables ready.")
+
+
+def step_extract_pdfs():
+    name = STEP_NAMES["extract"]
+    i = _step_index(name)
+    _set_step_state(i, "running", "Extracting IOCs from PDFs…")
+
+    out_csv = EXTRACTED_IOCS_CSV
+    inputs = [EXTRACT_SCRIPT] + list(PDFS_DIR.glob("*.pdf"))
+    if not needs_run([out_csv], inputs=inputs):
+        _set_step_state(i, "skip", f"Up to date: {out_csv.name}")
+        return
+
+    run([sys.executable, str(EXTRACT_SCRIPT), "--in", str(PDFS_DIR), "--out", str(EXTRACTED_PDFS_DIR)])
+    if not out_csv.exists():
+        _set_step_state(i, "error", f"Missing: {out_csv}")
+        raise FileNotFoundError(f"Expected {out_csv}")
+    _set_step_state(i, "done", "IOC CSV generated.")
+
+
+def step_map_iocs_to_attack(force: bool = False):
+    name = STEP_NAMES["map"]
+    i = _step_index(name)
+    _set_step_state(i, "running", "Mapping IOCs to ATT&CK…")
+
+    outputs = [RANKED_GROUPS_CSV, GROUP_TTPS_DETAIL_CSV]
+    inputs  = [MAP_IOCS_SCRIPT, EXTRACTED_IOCS_CSV, TI_GROUPS_TECHS_CSV]
+    if not needs_run(outputs, inputs=inputs) and not force:
+        _set_step_state(i, "skip", f"Up to date: {RANKED_GROUPS_CSV.name}, {GROUP_TTPS_DETAIL_CSV.name}")
+        return
+
+    run([sys.executable, str(MAP_IOCS_SCRIPT)], cwd=str(PROJECT_ROOT))
+    for out in outputs:
+        if not out.exists():
+            _set_step_state(i, "error", f"Missing: {out}")
+            raise FileNotFoundError(f"Expected {out}")
+    _set_step_state(i, "done", "Mappings updated.")
+
+
+def step_build_dataset():
+    name = STEP_NAMES["dataset"]
+    i = _step_index(name)
+    _set_step_state(i, "running", "Building dataset & labels…")
+
+    outputs = [DATASET_CSV, LABELS_TXT]
+    inputs  = [BUILD_DATASET_SCRIPT, EXTRACTED_IOCS_CSV, TI_GROUPS_TECHS_CSV]
+    if not needs_run(outputs, inputs=inputs):
+        _set_step_state(i, "skip", f"Up to date: {DATASET_CSV.name}, {LABELS_TXT.name}")
+        return
+
+    run([sys.executable, str(BUILD_DATASET_SCRIPT)])
+    if not DATASET_CSV.exists() or not LABELS_TXT.exists():
+        _set_step_state(i, "error", "dataset.csv / labels.txt missing.")
+        raise FileNotFoundError("Missing dataset.csv or labels.txt")
+    _set_step_state(i, "done", "dataset.csv & labels.txt ready.")
+
+
+def step_mitigations(force: bool = False):
+    name = STEP_NAMES["mitigate"]
+    i = _step_index(name)
+    _set_step_state(i, "running", "Building mitigations…")
+
+    out_csv = MITIGATIONS_CSV
+    inputs  = [MITIGATIONS_SCRIPT, GROUP_TTPS_DETAIL_CSV, MAPPING_CSV, EXCEL_ATTACK_TECHS]
+    if not needs_run([out_csv], inputs=inputs) and not force:
+        _set_step_state(i, "skip", f"Up to date: {out_csv.name}")
+        return
+
+    res = subprocess.run([sys.executable, str(MITIGATIONS_SCRIPT)], cwd=str(PROJECT_ROOT))
+    if res.returncode != 0:
+        _set_step_state(i, "error", "mitigations.py failed.")
+        raise RuntimeError(f"mitigations.py exited {res.returncode}")
+    if not out_csv.exists():
+        _set_step_state(i, "error", f"Missing: {out_csv}")
+        raise FileNotFoundError(f"Expected {out_csv}")
+    _set_step_state(i, "done", "mitigations.csv ready.")
+
+
+# def step_train_roberta_if_needed():
+#     name = STEP_NAMES["train"]
+#     i = _step_index(name)
+#     _set_step_state(i, "running", "Checking/Training RoBERTa…")
+
+#     if not _needs_training(BEST_MODEL_DIR):
+#         _set_step_state(i, "skip", f"Usable model found in {BEST_MODEL_DIR.name}.")
+#         return
+
+#     # sanity check dataset before training
+#     assert_dataset_ready()
+#     res = subprocess.run([sys.executable, str(TRAIN_ROBERTA_SCRIPT)], cwd=str(PROJECT_ROOT))
+#     if res.returncode != 0:
+#         _set_step_state(i, "error", "train_roberta.py failed.")
+#         raise RuntimeError(f"train_roberta.py exited {res.returncode}")
+
+#     if _needs_training(BEST_MODEL_DIR):
+#         _set_step_state(i, "error", "Best model artifacts still incomplete.")
+#         raise RuntimeError("Best model missing after training.")
+#     _set_step_state(i, "done", "Best model ready.")
+
+def step_train_roberta_if_needed():
+    name = STEP_NAMES["train"]
+    i = _step_index(name)
+    _set_step_state(i, "running", "Checking/Training RoBERTa…")
+
+    # turn on indeterminate UI while this step is running
+    with _lock:
+        PROG["indeterminate"] = True
+
+    try:
+        if not _needs_training(BEST_MODEL_DIR):
+            _set_step_state(i, "skip", f"Usable model found in {BEST_MODEL_DIR.name}.")
+            return
+
+        assert_dataset_ready()
+        res = subprocess.run([sys.executable, str(TRAIN_ROBERTA_SCRIPT)], cwd=str(PROJECT_ROOT))
+        if res.returncode != 0:
+            _set_step_state(i, "error", "train_roberta.py failed.")
+            raise RuntimeError(f"train_roberta.py exited {res.returncode}")
+
+        if _needs_training(BEST_MODEL_DIR):
+            _set_step_state(i, "error", "Best model artifacts still incomplete.")
+            raise RuntimeError("Best model missing after training.")
+
+        _set_step_state(i, "done", "Best model ready.")
+    finally:
+        # always turn it off when this step finishes or errors
+        with _lock:
+            PROG["indeterminate"] = False
+
+def _is_empty_dir(p: Path) -> bool:
+    return (not p.exists()) or (next(p.iterdir(), None) is None)
+
+
+def assert_dataset_ready():
+    required = {"id", "text", "labels"}  # weight is optional
+    if not DATASET_CSV.exists():
+        raise FileNotFoundError(f"dataset.csv missing: {DATASET_CSV}")
+    import csv
+    with DATASET_CSV.open("r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(f"dataset.csv missing columns: {missing}")
+def ensure_prereqs():
+    """Lightweight sanity checks before the pipeline runs."""
+    ensure_dir_tree()          # from project_paths
+    add_src_to_syspath()       # if your training/build scripts import from src
+
+    # Check PDFs exist for extraction
+    if not PDFS_DIR.exists():
+        raise FileNotFoundError(f"PDFS_DIR does not exist: {PDFS_DIR}")
+    if not any(PDFS_DIR.glob("*.pdf")):
+        print(f"[WARN] No PDFs found in {PDFS_DIR}. The pipeline can still run, "
+              "but dataset.csv may be empty/unlabeled.")
+
+    # Check that the helper scripts exist
+    for p in [EXTRACT_SCRIPT, ATTACK_SCRIPT, MAP_IOCS_SCRIPT, BUILD_DATASET_SCRIPT]:
+        if not Path(p).exists():
+            raise FileNotFoundError(f"Missing script: {p}")
+
+def _needs_training(model_dir: Path) -> bool:
+    if _is_empty_dir(model_dir):
+        return True
+    # Check for common artifacts
+    required_any = [
+        model_dir / "pytorch_model.bin",
+        model_dir / "model.safetensors",
+    ]
+    required_all = [
+        model_dir / "config.json",
+        model_dir / "tokenizer.json",
+        model_dir / "tokenizer_config.json",
+    ]
+    if not any(p.exists() for p in required_any):
+        return True
+    if not all(p.exists() for p in required_all):
+        return True
+    return False
+
+
+def ensure_prereqs():
+    ensure_dir_tree()
+    add_src_to_syspath()
+
+    if not PDFS_DIR.exists():
+        raise FileNotFoundError(f"PDFS_DIR does not exist: {PDFS_DIR}")
+    if not any(PDFS_DIR.glob("*.pdf")):
+        print("[WARN] No PDFs in PDFS_DIR — pipeline can run, outputs may be sparse.")
+
+    for p in [EXTRACT_SCRIPT, ATTACK_SCRIPT, MAP_IOCS_SCRIPT, BUILD_DATASET_SCRIPT]:
+        if not Path(p).exists():
+            raise FileNotFoundError(f"Missing script: {p}")
+
+def build_everything(*, force_map=False, force_mitigations=False, train_if_missing=True):
+    ensure_prereqs()
+    step_enterprise_attack()
+    step_extract_pdfs()
+    step_map_iocs_to_attack(force=force_map)
+    step_build_dataset()
+    step_mitigations(force=force_mitigations)
+    if train_if_missing:
+        step_train_roberta_if_needed()
+
+# ---------------- Pipeline thread ----------------
+def _pipeline(force=False):
+    steps = [
+        STEP_NAMES["extract"],
+        STEP_NAMES["enterprise"],
+        STEP_NAMES["map"],
+        STEP_NAMES["dataset"],
+        STEP_NAMES["mitigate"],
+        STEP_NAMES["train"],   # include or remove if you don’t want training on first run
+    ]
+    _init_progress(steps)
+
+    try:
+        if force:
+            # Make outputs stale so needs_run() triggers real rebuild
+            for p in (EXTRACTED_IOCS_CSV, GROUP_TTPS_DETAIL_CSV, RANKED_GROUPS_CSV,
+                      DATASET_CSV, LABELS_TXT, MITIGATIONS_CSV):
+                try:
+                    p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+        # If you don’t want training on first run, set train_if_missing=False here
+        build_everything(force_map=force, force_mitigations=force, train_if_missing=True)
+
+    except Exception as e:
+        with _lock:
+            for s in PROG["steps"]:
+                if s["state"] == "running":
+                    s["state"] = "error"
+                    s["msg"] = f"Error: {e}"
+            PROG["msg"] = f"Pipeline failed: {e}"
+    finally:
+        _finish_progress()
+
+# ---- add this helper near your other helpers ----
+def _autobuild_needed() -> bool:
+    """
+    Return True if a first-run or stale state is detected and we should
+    auto-start the pipeline from index(). We only check for the presence
+    of key outputs and a usable best model.
+    """
+    # core CSV outputs produced by your pipeline
+    required = [
+        TI_GROUPS_TECHS_CSV,      # enterprise tables
+        EXTRACTED_IOCS_CSV,       # IOC CSV
+        RANKED_GROUPS_CSV,        # ranked groups
+        GROUP_TTPS_DETAIL_CSV,    # group→TTPs detail
+        DATASET_CSV,              # dataset
+        LABELS_TXT,               # labels
+        MITIGATIONS_CSV,          # mitigations
+    ]
+    # if any is missing -> need to build
+    if any(not p.exists() for p in required):
+        return True
+    # if the “best model” is missing/incomplete -> need to (re)train
+    if _needs_training(BEST_MODEL_DIR):
+        return True
+    return False
+from werkzeug.serving import WSGIRequestHandler
+
+class QuietHandler(WSGIRequestHandler):
+    def log_request(self, *args, **kwargs):
+        # skip logging just for /status
+        if getattr(self, "path", "") == "/status":
+            return
+        return super().log_request(*args, **kwargs)
 # ============================================
-# Routes
+# Index & Workflow
+#index, workflow, roberta, submit_both, predict with module, predict api, match, export
 # ============================================
+@app.get("/status")
+def status():
+    with _lock:
+        return jsonify(PROG)
+
+@app.post("/build")
+def build():
+    force = request.form.get("force") == "1"
+    with _lock:
+        if PROG["running"]:
+            return jsonify({"ok": False, "msg": "Pipeline already running."}), 409
+        # kick thread
+        t = Thread(target=_pipeline, kwargs={"force": force}, daemon=True)
+        t.start()
+    return jsonify({"ok": True, "msg": "Started."})
+
+@app.route('/')
+def index():
+    ensure_dir_tree()
+    try:
+        with _lock:
+            if not PROG.get("running") and _autobuild_needed():
+                # initialize a fresh progress state for the UI
+                PROG.update({"running": False, "pct": 0, "steps": [], "msg": "Starting…"})
+                t = Thread(target=_pipeline, kwargs={"force": False}, daemon=True)
+                t.start()
+        # Always regenerate latest mapping from Excel
+        extract_techniques(EXCEL_ATTACK_TECHS, MAPPING_CSV)
+
+        # Load mapping: id, name, label
+        df_map = pd.read_csv(MAPPING_CSV)
+
+        # Group main + sub-techniques
+        ttp_dict = defaultdict(list)
+        for tid, label in zip(df_map["id"], df_map["label"]):
+            root = tid.split(".")[0]
+            if "." in tid:
+                ttp_dict[root].append((tid, label))
+            else:
+                ttp_dict.setdefault(tid, [])
+
+        # Build grouped list for dropdown
+        id_to_label = dict(zip(df_map["id"], df_map["label"]))
+        grouped_ttps = []
+        for root in sorted(ttp_dict.keys()):
+            root_label = id_to_label.get(root, root)
+            subs = [lbl for _, lbl in sorted(ttp_dict[root], key=lambda x: x[0])]
+            grouped_ttps.append((root_label, subs))
+        return render_template('index.html', grouped_ttps=grouped_ttps)
+
+    except Exception as e:
+        return render_template('error.html', error=str(e))
+# =======================================================
+# ROBERTA ROUTE 
+# =======================================================
 @app.route('/roberta', methods=['POST'])
 def roberta():
     try:
         ttps_input = [t.split()[0].upper() for t in request.form.getlist('ttps[]')]
         ttps = validate_ttps(ttps_input)
 
+        # ✅ Single source of truth
         res = _run_roberta_flow(ttps)
 
-        global LAST_RESULTS
+        # cache for export
+        global LAST_RESULTS, LAST_RESULTS_ROBERTA
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         LAST_RESULTS = {
             "ttps": res["ttps"],
             "matched": res["matched_top3"],
             "analysis": res["analysis"],
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "timestamp": timestamp,
         }
+        LAST_RESULTS_ROBERTA = LAST_RESULTS.copy()
 
+        # render using roberta keys
         return render_template(
             'results.html',
             ttps=res["ttps"],
-            matched=res["matched_top3"],
-            analysis=res["analysis"],
-            timestamp=LAST_RESULTS["timestamp"]
+            rob_matched=res["matched_top3"],
+            rob_analysis=res["analysis"],
+            export_mode=False,
+            timestamp=timestamp,
         )
-
     except Exception as e:
         return render_template('error.html', error=str(e))
 
+    
 @app.route('/results', methods=['POST'])
 def results():
     try:
@@ -483,7 +1028,7 @@ def results():
         }
 
         return render_template(
-            "results_compare.html",
+            "results.html",
             timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             ttps=ttps,
             rule_matched=rule_res["matched_top3"],
@@ -495,28 +1040,6 @@ def results():
 
     except Exception as e:
         return render_template('error.html', error=str(e)), 500
-
-@app.route('/pipeline', methods=['POST'])
-def pipeline():
-    try:
-        force = bool(request.form.get('force') or request.json.get('force') if request.is_json else request.form.get('force'))
-        # Run in order
-        step_extract_pdfs(force=force)
-        step_enterprise_attack(force=force)
-        step_build_dataset(force=force)
-        step_train_roberta(force=force)
-
-        ok = all(p.exists() for p in BEST_REQUIRED)
-        return jsonify({
-            "status": "ok" if ok else "warning",
-            "message": "Pipeline completed" if ok else "Pipeline finished but best model looks incomplete.",
-            "best_model_dir": str(BEST_MODEL_DIR),
-            "have_best_files": {p.name: p.exists() for p in BEST_REQUIRED}
-        })
-    except SystemExit as e:
-        return jsonify({"status": "error", "message": f"Subprocess exited with code {int(e.code)}"}), 500
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/predict', methods=['POST'])
 def predict_api():
@@ -544,7 +1067,12 @@ def match():
         ttps_input = [t.split()[0].upper() for t in request.form.getlist('ttps[]')]
         ttps = validate_ttps(ttps_input)
 
-        matched_df = match_ttps(ttps, DATA_DIR)
+        matched_df = match_ttps(ttps, MAPPED_DIR)
+        # Keep root-expanded versions for mitigation logic
+        if "_ttp_with_roots" in matched_df.columns:
+            matched_df["_ttp_with_roots"] = matched_df["_ttp_with_roots"].apply(lambda s: set(s) if isinstance(s, (list, set)) else set())
+        else:
+            matched_df["_ttp_with_roots"] = matched_df["_ttp_set"]  # fallback
 
         # Convert numeric, sort, top3
         matched_df["rank"]  = pd.to_numeric(matched_df.get("rank", float("nan")), errors="coerce")
@@ -557,18 +1085,24 @@ def match():
 
         # Save traceability outputs
         matched_df.to_csv("matched_groups_rule.csv", index=False)
-        top3_df.to_csv("matched_top3_rule.csv", index=False)
-        pd.DataFrame({"TTP": ttps}).to_csv("inputted_ttps_rule.csv", index=False)
 
         # GPT Analysis
-        mit_csv_path = _run_mitigations_and_get_csv()
+        mit_csv_path = MITIGATIONS_CSV
         gpt_response = analyze_TTP(ttps, matched_df, mitigations_csv=str(mit_csv_path))
         parsed = parse_ai_response(gpt_response)
 
-        # Filter mitigations for matched group techniques
-        group_ttps = list({t.strip().upper() for t in _collect_group_ttps(matched_df, ttps)})
-
-        mit_filtered = load_filtered_mitigations(str(mit_csv_path), group_ttps)
+        group_ttps = set()
+        if "_ttp_with_roots" in matched_df.columns:
+         for s in matched_df["_ttp_with_roots"]:
+            if isinstance(s, (set, list)):
+              group_ttps.update(s)
+            elif isinstance(s, str):
+               group_ttps.update(re.findall(r"\bT\d{4}(?:\.\d{3})?\b", s.upper()))
+        else:
+            group_ttps = {t.strip().upper() for t in ttps if t}
+            group_ttps = sorted(group_ttps)
+            print(f"[DEBUG] Mitigation filter using {len(group_ttps)} TTPs: {group_ttps}")
+            mit_filtered = load_filtered_mitigations(str(mit_csv_path), group_ttps)
 
         # Remove duplicate mitigation descriptions
         if not mit_filtered.empty:
@@ -598,6 +1132,9 @@ def match():
 
     except Exception as e:
         return render_template('error.html', error=str(e))
+# =======================================================
+# EXPORT ROUTE - For when printing results to document
+# =======================================================
 
 @app.route('/export')
 def export():
@@ -611,16 +1148,24 @@ def export():
         if not ctx:
             return "No results available to export. Please generate a report first."
 
+        # Always provide BOTH sets so the template never complains.
         rendered = render_template(
             "results.html",
-            ttps=ctx["ttps"],
-            matched=ctx["matched"],
-            analysis=ctx["analysis"],
-            timestamp=ctx["timestamp"],
-            export_mode=True
+            ttps=ctx.get("ttps", []),
+
+            # Rule side
+            rule_matched=(ctx.get("matched", []) if which == "rule" else []),
+            rule_analysis=(ctx.get("analysis", {}) if which == "rule" else {}),
+
+            # RoBERTa side
+            rob_matched=(ctx.get("matched", []) if which == "roberta" else []),
+            rob_analysis=(ctx.get("analysis", {}) if which == "roberta" else {}),
+
+            export_mode=True,
+            timestamp=ctx.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         )
 
-        # strip CSS link
+        # strip CSS link if needed
         rendered = re.sub(r'<link rel="stylesheet" href="[^"]*attribution\.css">', "", rendered, flags=re.IGNORECASE)
 
         response = make_response(rendered)
@@ -631,75 +1176,8 @@ def export():
 
     except Exception as e:
         return f"Error exporting to .doc: {e}"
+    
 
-# ============================================
-# Pipeline steps
-# ============================================
-def step_extract_pdfs(force: bool) -> None:
-    ensure_dirs()
-    if not needs_run([EXTRACTED_IOCS_CSV], force):
-        print(f"[SKIP] extract_pdfs.py — up to date: {EXTRACTED_IOCS_CSV}")
-        return
-    run([sys.executable, str(EXTRACT_SCRIPT)])
-
-def step_enterprise_attack(force: bool) -> None:
-    ensure_dirs()
-    if not needs_run([TI_GROUPS_TECHS_CSV], force):
-        print(f"[SKIP] enterprise_attack.py — up to date: {TI_GROUPS_TECHS_CSV}")
-        return
-    run([sys.executable, str(ATTACK_SCRIPT)])
-
-def step_build_dataset(force: bool) -> None:
-    ensure_dirs()
-    if not needs_run([DATASET_CSV, LABELS_TXT], force):
-        print(f"[SKIP] build_dataset.py — up to date: {DATASET_CSV}, {LABELS_TXT}")
-        return
-    run([sys.executable, str(BUILD_DATASET_SCRIPT)])
-
-def step_train_roberta(force: bool) -> None:
-    ensure_dirs()
-    print(f"\n[DEBUG] BEST_MODEL_DIR: {BEST_MODEL_DIR}")
-    if BEST_MODEL_DIR.exists():
-        try:
-            print("[DEBUG] best dir contents:", sorted(p.name for p in BEST_MODEL_DIR.iterdir()))
-        except Exception as e:
-            print("[DEBUG] failed to list best dir:", e)
-
-    if not needs_run(BEST_REQUIRED, force):
-        print(f"[SKIP] train_roberta.py — best model already present: {BEST_MODEL_DIR}")
-        return
-    run([sys.executable, str(TRAIN_ROBERTA_SCRIPT)])
-
-# ============================================
-# Main
-# ============================================
-def main():
-    import argparse
-    ap = argparse.ArgumentParser(description="Build dataset + train RoBERTa (skip if already built).")
-    ap.add_argument("--force", action="store_true", help="Re-run steps even if outputs exist.")
-    ap.add_argument("--skip-build", action="store_true", help="Skip dataset build step.")
-    ap.add_argument("--skip-train", action="store_true", help="Skip training step.")
-    args = ap.parse_args()
-
-    print(f"[ROOT] {BASE_DIR}")
-    print(f"[DATA] {DATA_ROOT}")
-    print(f"[PROC] {PROCESSED_DIR}")
-    print(f"[MODELS] {MODELS_ROOT}")
-
-    if not args.skip_build:
-        step_build_dataset(force=args.force)
-    else:
-        print("[SKIP] Step: build dataset")
-
-    if not args.skip_train:
-        if not DATASET_CSV.exists():
-            print(f"[WARN] {DATASET_CSV} not found; training may fail. Run without --skip-build or use --force.")
-        step_train_roberta(force=args.force)
-    else:
-        print("[SKIP] Step: train roberta")
-
-    ok = all(p.exists() for p in BEST_REQUIRED)
-    print(f"\nBest model: {BEST_MODEL_DIR} {'(OK)' if ok else '(incomplete)'}")
 
 if __name__ == '__main__':
-    app.run(debug=True, threaded=True)
+    app.run(debug=False, threaded=True,request_handler=QuietHandler)
