@@ -287,6 +287,16 @@ def _run_rule_match_flow(ttps: list[str]) -> dict:
     else:
         matched_df = matched_df.sort_values(by="score", ascending=False)
 
+        # =====================================================
+    # ✅ Remove unranked duplicates (rank = NaN) per group
+    # =====================================================
+    if "group_id" in matched_df.columns:
+        ranked_ids = matched_df.loc[matched_df["rank"].notna(), "group_id"].unique()
+        # If a group has both ranked and unranked rows, drop the unranked ones
+        matched_df = matched_df[
+            ~((matched_df["group_id"].isin(ranked_ids)) & (matched_df["rank"].isna()))
+        ]
+
     top3_df = matched_df.head(3)
     matched_df.to_csv("matched_groups_rule.csv", index=False)
     pd.DataFrame({"TTP": ttps}).to_csv("inputted_ttps.csv", index=False)
