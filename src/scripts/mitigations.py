@@ -115,9 +115,7 @@ def _norm_tech_id(s: str) -> str:
         return ''
     m = _ID_RE.match(str(s))
     if not m:
-        # If it already looks uppercase and reasonable, just tidy whitespace
         s = _norm_ws(str(s))
-        # Final fallback: uppercase T- prefix if present
         if s and s[0].lower() == 't':
             s = 'T' + s[1:]
         return s
@@ -131,9 +129,9 @@ def _id_sort_key(v: str):
     """
     m = _ID_RE.match(v or "")
     if not m:
-        return (9999, 999)  # Non-standard IDs go to bottom
+        return (9999, 999) 
     major = int(m.group(1))
-    minor = int(m.group(2) or 999)  # plain technique first
+    minor = int(m.group(2) or 999)  
     return (major, minor)
 
 
@@ -151,32 +149,24 @@ def tidy_mitigations_dataframe(df: pd.DataFrame,
       Else:
         Group by (ID, Name) and merge unique descriptions.
     """
-    # Ensure columns exist
     for c in (col_id, col_name, col_desc):
         if c not in df.columns:
             raise ValueError(f"Expected column '{c}' not found in mitigations dataframe.")
 
-    # Normalize fields
     df[col_id] = df[col_id].map(_norm_tech_id)
     df[col_name] = df[col_name].map(lambda x: _norm_text(x).strip())
     df[col_desc] = df[col_desc].map(_norm_text)
 
-    # Drop rows missing both id and name (junk)
     df = df[~(df[col_id].eq('') & df[col_name].eq(''))].copy()
 
-    # Remove full-row duplicates first
     df = df.drop_duplicates().reset_index(drop=True)
 
-    # De-duplicate by (id,name,desc) with stricter normalization on desc
     df["_dedupe_desc_norm"] = df[col_desc].map(_norm_desc_for_dedupe)
     df = df.drop_duplicates(subset=[col_id, col_name, "_dedupe_desc_norm"]).reset_index(drop=True)
 
     if group_by_description_across_ttps:
-        # NEW: collapse across TTPs by identical description
         out = collapse_across_ttps_by_description(df, col_id, col_name, col_desc)
         return out
-
-    # (original path) Group by (id,name) and merge unique descriptions
     grouped = []
     for (tid, tname), g in df.groupby([col_id, col_name], dropna=False, sort=False):
         seen = set()
@@ -191,7 +181,6 @@ def tidy_mitigations_dataframe(df: pd.DataFrame,
 
     out = pd.DataFrame(grouped, columns=[col_id, col_name, col_desc])
 
-    # Sort
     def _id_sort_key(v: str):
         """
         Return a numeric sort key for MITRE technique IDs (T####.###).
@@ -199,7 +188,7 @@ def tidy_mitigations_dataframe(df: pd.DataFrame,
         """
         m = _ID_RE.match(v or "")
         if not m:
-            return (9999, 999)  # Non-standard IDs go to the bottom
+            return (9999, 999)
         major = int(m.group(1))
         minor = int(m.group(2) or 999)
         return (major, minor)
@@ -228,11 +217,7 @@ def collapse_across_ttps_by_description(df: pd.DataFrame,
     for desc_norm, g in df.groupby("_dedupe_desc_norm", dropna=False):
         if not desc_norm:
             continue
-
-        # pick the longest original description as representative
         rep_desc = max(g[col_desc].astype(str), key=lambda s: len(s))
-
-        # Collect unique (id, name) pairs
         pairs = []
         seen = set()
         for tid, tname in zip(g[col_id].astype(str), g[col_name].astype(str)):
@@ -243,20 +228,16 @@ def collapse_across_ttps_by_description(df: pd.DataFrame,
                 seen.add(key)
                 pairs.append((tid_n, tname_n))
 
-        # Sort pairs by technique id numeric order (techniques before sub-techniques)
         pairs.sort(key=lambda p: _id_sort_key(p[0]))
 
-        # Join with commas (space after comma for readability)
         joined_ids = ", ".join(p[0] for p in pairs)
         joined_names = ", ".join(p[1] for p in pairs)
 
-        # Only keep if there is at least one ID/name
         if joined_ids:
             rows.append({col_id: joined_ids, col_name: joined_names, col_desc: rep_desc})
 
     out = pd.DataFrame(rows, columns=[col_id, col_name, col_desc])
 
-    # Sort by first ID token in the joined list
     def _first_id_sortkey(s: str):
         first = (s or "").split(",")[0].strip()
         return _id_sort_key(first)
