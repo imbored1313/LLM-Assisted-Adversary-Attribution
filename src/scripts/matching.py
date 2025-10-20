@@ -1,21 +1,16 @@
 from __future__ import annotations
+import csv
 import logging
 from pathlib import Path
 import re
 import sys
 from typing import Iterable, Set, Tuple
 import pandas as pd
-
 ROOT = Path(__file__).resolve().parents[2]  # repo root
 sys.path.insert(0, str(ROOT))
-
 from project_paths import (
-    PROJECT_ROOT,
-    MAPPED_DIR,
-    GROUP_TTPS_DETAIL_CSV,
-    RANKED_GROUPS_CSV,
+    PROJECT_ROOT, MAPPED_DIR, GROUP_TTPS_DETAIL_CSV,GROUP_TTPS_DETAIL_CSV,RANKED_GROUPS_CSV,
 )
-
 # ============================================
 # Regex definitions
 # ============================================
@@ -23,7 +18,7 @@ TTP_RE = re.compile(r"^T\d{4}(?:\.\d{3})?$")
 TTP_PATTERN = re.compile(r"\bT\d{4}(?:\.\d{3})?\b", re.IGNORECASE)
 
 PREFERRED_KEYS = [
-    "matched_exact", "ttps", "ttp",
+    "matched_exact", "matched_root_only", "ttps", "ttp",
     "techniques", "technique", "attack"
 ]
 
@@ -42,18 +37,28 @@ def validate_ttps(ttps: Iterable[str]) -> Tuple[str, ...]:
     return ttps
 
 # ============================================
-# Dataset loading
+# Dataset handling — now merges both CSVs
 # ============================================
 def load_combined_dataset(MAPPED_DIR: Path) -> pd.DataFrame:
+    """
+    Load and merge both 'group_ttps_detail.csv' and 'ranked_groups.csv'
+    if they exist. This ensures that main and sub-techniques like
+    T1110 / T1110.002 are both represented.
+    """
+    group_path = GROUP_TTPS_DETAIL_CSV
+    ranked_path = RANKED_GROUPS_CSV
+
     dfs = []
-    if GROUP_TTPS_DETAIL_CSV.exists():
-        dfs.append(pd.read_csv(GROUP_TTPS_DETAIL_CSV))
-        logging.info(f"Loaded {GROUP_TTPS_DETAIL_CSV.name} ({len(dfs[-1])} rows)")
-    if RANKED_GROUPS_CSV.exists():
-        dfs.append(pd.read_csv(RANKED_GROUPS_CSV))
-        logging.info(f"Loaded {RANKED_GROUPS_CSV.name} ({len(dfs[-1])} rows)")
+    if group_path.exists():
+        dfs.append(pd.read_csv(group_path))
+        logging.info(f"Loaded {group_path.name} ({len(dfs[-1])} rows)")
+    if ranked_path.exists():
+        dfs.append(pd.read_csv(ranked_path))
+        logging.info(f"Loaded {ranked_path.name} ({len(dfs[-1])} rows)")
+
     if not dfs:
         raise FileNotFoundError(f"No datasets found in {MAPPED_DIR}")
+
     combined = pd.concat(dfs, ignore_index=True).drop_duplicates()
     logging.info(f"Combined dataset size: {len(combined)} rows")
     return combined
@@ -87,38 +92,39 @@ def split_tokens(cell) -> Set[str]:
         return set()
     return set(m.upper() for m in TTP_PATTERN.findall(str(cell)))
 
+def with_roots(tts: Iterable[str]) -> Set[str]:
+    out: Set[str] = set()
+    input_roots = {t.split(".", 1)[0] for t in tts if "." in t}
+
+    for t in tts:
+        out.add(t)
+        # Add root only if:
+        # - it’s not already in the input list, AND
+        # - this TTP is a sub-technique (has a dot)
+        root = t.split(".", 1)[0]
+        if "." in t and root not in input_roots:
+            out.add(root)
+
+    return out
+
 # ============================================
-# Strict matching (with overlap tracking)
+# Matching logic
 # ============================================
 def match_ttps(ttps: Tuple[str, ...], MAPPED_DIR: Path) -> pd.DataFrame:
     """
-    STRICT matching logic:
-    - Only matches exact input TTPs (no root expansion).
-    - Adds a new column 'input_overlap' showing which input TTPs matched.
-    - Renames 'matched_exact' → 'associated_ttps' for clarity.
+    Match input TTPs against the combined dataset.
     """
     df = load_combined_dataset(MAPPED_DIR)
     ttp_col = find_ttp_column(df)
 
-    # Extract techniques per dataset row
     df["_ttp_set"] = df[ttp_col].map(split_tokens)
+    df["_ttp_root_set"] = df["_ttp_set"].map(with_roots)
 
-    # Build input set (strict)
-    input_full = {t.upper() for t in ttps}
+    input_full = set(ttps)
+    input_plus_roots = with_roots(input_full)
 
-    # Compute overlap
-    df["input_overlap"] = df["_ttp_set"].apply(
-        lambda s: ", ".join(sorted(input_full & s)) if input_full & s else ""
-    )
-
-    # Filter only rows with overlap
-    matched = df.loc[df["input_overlap"].astype(bool)].copy()
-
-    # Rename matched_exact → associated_ttps (for clarity)
-    if "matched_exact" in matched.columns:
-        matched.rename(columns={"matched_exact": "associated_ttps"}, inplace=True)
-
-    matched.drop(columns=["_ttp_set"], inplace=True, errors="ignore")
+    mask = df["_ttp_root_set"].apply(lambda s: bool(input_plus_roots & s))
+    matched = df.loc[mask].drop(columns=["_ttp_set", "_ttp_root_set"])
     return matched
 
 # ============================================
@@ -127,10 +133,9 @@ def match_ttps(ttps: Tuple[str, ...], MAPPED_DIR: Path) -> pd.DataFrame:
 def write_outputs(matched: pd.DataFrame, ttps: Tuple[str, ...], out_dir: Path) -> Tuple[Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     matched_out = out_dir / "matched_groups_rule.csv"
+
     matched.to_csv(matched_out, index=False)
-    input_out = out_dir / "inputted_ttps.csv"
-    pd.DataFrame({"TTP": ttps}).to_csv(input_out, index=False)
-    return matched_out, input_out
+    return matched_out
 
 # ============================================
 # CLI entry point
@@ -161,7 +166,6 @@ def main() -> int:
     except Exception as e:
         logging.error(str(e))
         return 1
-
 
 if __name__ == "__main__":
     sys.exit(main())
