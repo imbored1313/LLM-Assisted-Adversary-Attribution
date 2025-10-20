@@ -11,11 +11,6 @@ A modular pipeline for automating cyber threat attribution using MITRE ATT&CK, A
 - [System Architecture](#system-architecture)
 - [Dependencies](#dependencies)
 - [Installation](#installation)
-- [Prerequisites to run](#prerequisites-to-run)
-  - [1. Extract IOCs from APTnotes PDFs](#1-extract-iocs-from-aptnotes-pdfs)
-  - [2. Map IOCs to MITRE ATT&CK Groups](#2-map-iocs-to-mitre-attck-groups)
-  - [3. Process and Normalize the MITRE Dataset](#3-process-and-normalize-the-mitre-dataset)
-  - [4. Build the Labeled Dataset for Roberta Model Training](#4-build-the-labeled-dataset-for-roberta-model-training)
 - [Usage](#usage)
 - [Notes](#notes)
 - [Troubleshooting](#troubleshooting)
@@ -84,7 +79,9 @@ src/scripts
 │
 └──► report_generator.py → Generates GenAI-based structured intelligence reports summarizing group matches, mitigations, and analyst insights
 ```
-
+<img width="329" height="554" alt="image" src="https://github.com/user-attachments/assets/12cbaa1c-3185-4f0f-be1f-b5814e8d2991" />
+<img width="421" height="554" alt="image" src="https://github.com/user-attachments/assets/e17b00be-1d62-4069-95ba-094594ced439" />
+<img width="755" height="616" alt="image" src="https://github.com/user-attachments/assets/ccbe8831-b622-4825-a193-c9af4b944aad" />
 
 ---
 
@@ -148,14 +145,15 @@ navigate to `http://127.0.0.1:5000`
 
 ## Troubleshooting
 
-| Issue                       | Cause                                    | Solution                                    |
-|-----------------------------|------------------------------------------|---------------------------------------------|
-| OPENAI_API_KEY not found    | `.env` file missing                      | Add your key to `.env`                      |
-| No PDFs found               | Incorrect input folder                   | Ensure path to `aptnotes_pdfs/` is correct  |
-| Empty report output         | Invalid TTP input format                 | Use valid MITRE IDs (e.g., `T1059.003`)     |
-| Empty Confidence Assessment | Occassional Issues if Submit when Idle   | Return to the homepage and Click "Build/    |
-|                             |                                          | Resume" before Submitting the TTPs          |
+| Issue                       | Cause                                                | Solution                                                                          |
+|-----------------------------|------------------------------------------------------|-----------------------------------------------------------------------------------|
+| OPENAI_API_KEY not found    | `.env` file missing                                  | Add your key to `.env`                                                            |
+| No PDFs found               | Incorrect input folder                               | Ensure path to `aptnotes_pdfs/` is correct                                        |
+| Empty report output         | Invalid TTP input format                             | Use valid MITRE IDs (e.g., `T1059.003`)                                           |
+| Empty Confidence Assessment | Occassional Issues if Submit when Idle               | Return to the homepage and Click "Build/                                          |
+| Empty mitigations file      | Missing Data\processed\mitigations\mitigations.csv   | Ensure mitigations.csv exist in the specified directory and restart flask         |
 ---
+
 
 
 
