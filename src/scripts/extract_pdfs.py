@@ -5,7 +5,7 @@ Requires:
   pip install pymupdf
 """
 
-import argparse
+#imports
 import hashlib
 import json
 import re
@@ -13,6 +13,7 @@ import sys
 import urllib.parse
 from pathlib import Path
 from datetime import datetime
+import fitz
 ROOT = Path(__file__).resolve().parents[2]  # repo root
 sys.path.insert(0, str(ROOT))
 from project_paths import (
@@ -28,18 +29,11 @@ from project_paths import (
      project_path,ensure_dir_tree,add_src_to_syspath
 )
 
-
-try:
-    import fitz  # PyMuPDF
-except ImportError:
-    print("Missing dependency: PyMuPDF. Install with:\n  pip install pymupdf", file=sys.stderr)
-    sys.exit(1)
-
-
+# Static values
 DEFAULT_IN_DIR  = PDFS_DIR   
 DEFAULT_OUT_DIR = EXTRACTED_PDFS_DIR           
 
-
+# Regex Expressions
 URL_RX    = re.compile(r'\bhttps?://[^\s<>"\'\]\)}]+', re.I)  # http + https
 IPV4_RX   = re.compile(r'\b(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}\b')
 MD5_RX    = re.compile(r'\b[a-f0-9]{32}\b', re.I)
@@ -76,6 +70,7 @@ _VALID_TLDS = {
     "za"
 }
 
+# Apply SHA1 to file
 def sha1sum(path: Path) -> str:
     h = hashlib.sha1()
     with path.open("rb") as f:

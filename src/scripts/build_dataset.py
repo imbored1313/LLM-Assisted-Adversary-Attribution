@@ -8,6 +8,7 @@ Outputs:
 - <DATA_ROOT>/processed/labels.txt
 """
 
+#imports
 from __future__ import annotations
 import csv
 import json
@@ -16,21 +17,19 @@ from typing import Dict, List, Set, Tuple
 from collections import defaultdict
 import sys
 from pathlib import Path
+import time
 ROOT = Path(__file__).resolve().parents[2]  # repo root
 sys.path.insert(0, str(ROOT))
 from project_paths import (
        ATTACK_STIX_DIR,RULES_DIR,EXTRACTED_IOCS_CSV,TI_GROUPS_TECHS_CSV,DATASET_CSV,LABELS_TXT,
 )
+
+#Static values
 DEFAULT_TI_CSV     = TI_GROUPS_TECHS_CSV
 OUT_CSV            = DATASET_CSV
 OUT_LABELS         = LABELS_TXT
 OUT = RULES_DIR / "attack_rules_auto.json"
 INDEX_JSON   = ATTACK_STIX_DIR / "index.json"
-
-
-
-# =================== HARD-CODED SETTINGS ===================
-
 INCLUDE_GROUPS: bool = True
 MAX_PER_KIND: int = 10
 SEED: int = 42
@@ -41,7 +40,6 @@ TEST_RATIO: float  = 0.1
 # If you have extra weak rules, point this to the JSON file; else set to None
 WEAK_RULES_JSON: Path | None = None  # e.g., PROCESSED_DIR / "rules" / "attack_rules_auto.json"
 
-import time
 
 def dbg(msg: str):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
