@@ -13,26 +13,18 @@ sys.path.insert(0, str(ROOT))
 from project_paths import (
     PROJECT_ROOT, MAPPED_DIR, GROUP_TTPS_DETAIL_CSV,GROUP_TTPS_DETAIL_CSV,RANKED_GROUPS_CSV,
 )
-# ============================================
+
 # Regex definitions
-# ============================================
-TTP_RE = re.compile(r"^T\d{4}(?:\.\d{3})?$")
-TTP_PATTERN = re.compile(r"\bT\d{4}(?:\.\d{3})?\b", re.IGNORECASE)
+TTP_RE = re.compile(r"^T\d{4}(?:\.\d{3})?$") # Matches MITRE Technique ID format
+TTP_PATTERN = re.compile(r"\bT\d{4}(?:\.\d{3})?\b", re.IGNORECASE) # Pattern to find TTPs in text
 
-PREFERRED_KEYS = [
-    "matched_exact", "matched_root_only", "ttps", "ttp",
-    "techniques", "technique", "attack"
-]
-
-# ============================================
-# Validation
-# ============================================
-def validate_ttps(ttps: Iterable[str]) -> Tuple[str, ...]:
-    ttps = tuple(t.strip().upper() for t in ttps if t.strip())
-    if not ttps:
-        raise ValueError("No TTPs entered.")
+# Validation of input TTPs
+def validate_ttps(ttps: Iterable[str]) -> Tuple[str, ...]: # Validate input TTPs
+    ttps = tuple(t.strip().upper() for t in ttps if t.strip()) # Normalize and filter input
+    if not ttps: 
+        raise ValueError("No TTPs entered.") # Ensure at least one TTP is provided
     if len(ttps) > 5:
-        raise ValueError("Maximum of 5 TTPs allowed.")
+        raise ValueError("Maximum of 5 TTPs allowed.") # Limit to 5 TTPs
     for t in ttps:
         if not TTP_RE.match(t):
             raise ValueError(f"Invalid TTP format: {t}")
@@ -41,58 +33,42 @@ def validate_ttps(ttps: Iterable[str]) -> Tuple[str, ...]:
 # ============================================
 # Dataset handling — now merges both CSVs
 # ============================================
-def load_combined_dataset(MAPPED_DIR: Path) -> pd.DataFrame:
-    group_path = GROUP_TTPS_DETAIL_CSV
-    ranked_path = RANKED_GROUPS_CSV
+# Dataset handling 
+def load_combined_dataset(MAPPED_DIR: Path) -> pd.DataFrame: # Load and merge datasets
+    
+    # Load and merge both 'group_ttps_detail.csv' and 'ranked_groups.csv'
+    group_path = GROUP_TTPS_DETAIL_CSV # Path to group_ttps_detail.csv
+    ranked_path = RANKED_GROUPS_CSV # Path to ranked_groups.csv
 
-    dfs = []
+    dfs = [] # List to hold dataframes
+    
+    # Load group_ttps_detail.csv if it exists
     if group_path.exists():
-        dfs.append(pd.read_csv(group_path))
+        dfs.append(pd.read_csv(group_path)) # Load CSV into DataFrame
         logging.info(f"Loaded {group_path.name} ({len(dfs[-1])} rows)")
-    if ranked_path.exists():
+    if ranked_path.exists(): # Load ranked_groups.csv if it exists
         dfs.append(pd.read_csv(ranked_path))
         logging.info(f"Loaded {ranked_path.name} ({len(dfs[-1])} rows)")
-
+    # Check if any datasets were loaded
     if not dfs:
         raise FileNotFoundError(f"No datasets found in {MAPPED_DIR}")
 
+    # Combine datasets and drop duplicates
     combined = pd.concat(dfs, ignore_index=True).drop_duplicates()
     logging.info(f"Combined dataset size: {len(combined)} rows")
     return combined
 
-# ============================================
-# Column identification
-# ============================================
-def score_column(col: str) -> Tuple[int, int]:
-    cl = col.lower()
-    exact = any(cl == k for k in PREFERRED_KEYS)
-    hits = sum(1 for k in PREFERRED_KEYS if k in cl)
-    return (1 if exact else 0, hits)
-
-def find_ttp_column(df: pd.DataFrame) -> str:
-    ranked = sorted(df.columns, key=lambda c: score_column(c), reverse=True)
-    for c in ranked:
-        cl = c.lower()
-        if any(k in cl for k in PREFERRED_KEYS):
-            return c
-    for c in df.columns:
-        cl = c.lower()
-        if any(x in cl for x in ["ttp", "technique", "attack"]):
-            return c
-    raise KeyError("Could not find a TTP-related column.")
-
-# ============================================
-# Token extraction
-# ============================================
+# Helper function to split TTP tokens from a cell
 def split_tokens(cell) -> Set[str]:
     if pd.isna(cell):
         return set()
     return set(m.upper() for m in TTP_PATTERN.findall(str(cell)))
 
+# Expand TTPs to include root techniques
 def with_roots(tts: Iterable[str]) -> Set[str]:
-    out: Set[str] = set()
+    out: Set[str] = set() # Output set of TTPs
     input_roots = {t.split(".", 1)[0] for t in tts if "." in t}
-
+    # Expand each TTP to include its root technique
     for t in tts:
         out.add(t)
         root = t.split(".", 1)[0]
@@ -101,9 +77,7 @@ def with_roots(tts: Iterable[str]) -> Set[str]:
 
     return out
 
-# ============================================
 # Matching logic
-# ============================================
 def match_ttps(ttps: Tuple[str, ...], MAPPED_DIR: Path) -> pd.DataFrame:
     df = load_combined_dataset(MAPPED_DIR)
     df["_ttp_exact"] = df.apply(
@@ -116,7 +90,7 @@ def match_ttps(ttps: Tuple[str, ...], MAPPED_DIR: Path) -> pd.DataFrame:
             if "." in t:
                 out.add(t.split(".", 1)[0])
         return out
-
+    # Keep root-expanded version for later use
     df["_ttp_with_roots"] = df["_ttp_exact"].map(_expand_with_roots)
     input_set = set(ttps)
     mask = df["_ttp_exact"].apply(lambda s: bool(input_set & s))
@@ -128,9 +102,7 @@ def match_ttps(ttps: Tuple[str, ...], MAPPED_DIR: Path) -> pd.DataFrame:
     logging.info(f"[DEBUG] Strict match rows: {len(matched)} for {input_set}")
     return matched
 
-# ============================================
-# CSV output
-# ============================================
+# Output writing
 def write_outputs(matched: pd.DataFrame, ttps: Tuple[str, ...], out_dir: Path) -> Tuple[Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     matched_out = out_dir / "matched_groups_rule.csv"
@@ -138,9 +110,7 @@ def write_outputs(matched: pd.DataFrame, ttps: Tuple[str, ...], out_dir: Path) -
     matched.to_csv(matched_out, index=False)
     return matched_out
 
-# ============================================
-# CLI entry point
-# ============================================
+# Main execution flow
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     try:

@@ -1,3 +1,14 @@
+"""
+Build a multi-label text classification dataset from:
+- extracted IOCs:      <DATA_ROOT>/extracted_pdfs/extracted_iocs.csv
+- ATT&CK group->tech:  <DATA_ROOT>/attack_stix/processed/ti_groups_techniques.csv
+
+Outputs:
+- <DATA_ROOT>/processed/dataset.csv
+- <DATA_ROOT>/processed/labels.txt
+"""
+
+#imports
 from __future__ import annotations
 import csv
 import json
@@ -15,6 +26,8 @@ sys.path.insert(0, str(ROOT))
 from project_paths import (
        ATTACK_STIX_DIR,RULES_DIR,EXTRACTED_IOCS_CSV,TI_GROUPS_TECHS_CSV,DATASET_CSV,LABELS_TXT,
 )
+
+#Static values
 DEFAULT_TI_CSV     = TI_GROUPS_TECHS_CSV
 OUT_CSV            = DATASET_CSV
 OUT_LABELS         = LABELS_TXT
@@ -37,6 +50,7 @@ WEAK_RULES_JSON: Path | None = None  # e.g., PROCESSED_DIR / "rules" / "attack_r
 # ============================================
 # Small Utilities
 # ============================================
+
 def dbg(msg: str):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 

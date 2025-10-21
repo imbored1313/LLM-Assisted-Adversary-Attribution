@@ -1,3 +1,16 @@
+
+"""
+Parses the local MITRE ATT&CK Enterprise bundle and writes a mapping:
+  intrusion-set (group)  --uses-->  attack-pattern (technique/sub-technique)
+
+Output:
+  <DATA_ROOT>/attack_stix/processed/ti_groups_techniques.csv
+
+Paths are repo-relative and environment-overridable via common.paths:
+  - DATA_DIR env var can redirect <DATA_ROOT> if you want data elsewhere.
+"""
+
+#imports
 from __future__ import annotations
 import csv
 import json
@@ -14,6 +27,7 @@ sys.path.insert(0, str(ROOT))
 from project_paths import (
     PROCESSED_DIR, ATTACK_STIX_DIR,TI_GROUPS_TECHS_CSV,)
 
+# Static values
 INDEX_JSON   = ATTACK_STIX_DIR / "index.json"
 OUT_CSV      = TI_GROUPS_TECHS_CSV
 

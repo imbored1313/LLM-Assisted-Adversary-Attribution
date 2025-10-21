@@ -1,3 +1,11 @@
+"""
+Extract text/metadata/IOCs from PDFs.
+
+Requires:
+  pip install pymupdf
+"""
+
+#imports
 import hashlib
 import json
 import re
@@ -29,6 +37,27 @@ DEFAULT_OUT_DIR = EXTRACTED_PDFS_DIR
 # ============================================
 # Regex Patterns
 # ============================================
+import fitz
+ROOT = Path(__file__).resolve().parents[2]  # repo root
+sys.path.insert(0, str(ROOT))
+from project_paths import (
+    PROJECT_ROOT, DATA_ROOT, EXPERIMENTS_ROOT, SRC_ROOT, MODELS_ROOT, EXPERIMENTS_ROOT,SCRIPTS_DIR,
+    RAW_DIR, PROCESSED_DIR, EXTRACTED_PDFS_DIR,
+    MAPPED_DIR, EXCEL_DIR, MITIGATIONS_DIR,
+    ATTACK_STIX_DIR,PDFS_DIR,RULES_DIR,EXTRACT_SCRIPT,ATTACK_SCRIPT,MAP_IOCS_SCRIPT,
+    BUILD_DATASET_SCRIPT,MITIGATIONS_SCRIPT,
+    GROUP_TTPS_DETAIL_CSV,MATCHING_SCRIPT,REPORT_GENERATION_SCRIPT,TECHNIQUE_LABELS_SCRIPT,
+    TRAIN_ROBERTA_SCRIPT,PREDICT_SCRIPT,BEST_MODEL_DIR,
+    MAPPING_CSV,MITIGATIONS_CSV,EXCEL_ATTACK_TECHS,
+    EXTRACTED_IOCS_CSV,TI_GROUPS_TECHS_CSV,DATASET_CSV,LABELS_TXT,GROUP_TTPS_DETAIL_CSV,RANKED_GROUPS_CSV,
+     project_path,ensure_dir_tree,add_src_to_syspath
+)
+
+# Static values
+DEFAULT_IN_DIR  = PDFS_DIR   
+DEFAULT_OUT_DIR = EXTRACTED_PDFS_DIR           
+
+# Regex Expressions
 URL_RX    = re.compile(r'\bhttps?://[^\s<>"\'\]\)}]+', re.I)  # http + https
 IPV4_RX   = re.compile(r'\b(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}\b')
 MD5_RX    = re.compile(r'\b[a-f0-9]{32}\b', re.I)
@@ -70,6 +99,7 @@ _VALID_TLDS = {
 # ============================================
 # Utility Functions
 # ============================================
+# Apply SHA1 to file
 def sha1sum(path: Path) -> str:
     h = hashlib.sha1()
     with path.open("rb") as f:

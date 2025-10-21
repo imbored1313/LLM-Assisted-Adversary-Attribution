@@ -79,9 +79,6 @@ src/scripts
 │
 └──► report_generator.py → Generates GenAI-based structured intelligence reports summarizing group matches, mitigations, and analyst insights
 ```
-
-
-
 <img width="450" height="500" alt="image" src="https://github.com/user-attachments/assets/7d663766-5bb2-4217-85bf-bf813b0cc1d1" />
 <img width="450" height="500" alt="image" src="https://github.com/user-attachments/assets/3d15d2e7-88b7-4385-b488-935bc2916910" />
 
