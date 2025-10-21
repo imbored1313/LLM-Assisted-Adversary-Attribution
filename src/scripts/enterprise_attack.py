@@ -1,15 +1,3 @@
-
-"""
-Parses the local MITRE ATT&CK Enterprise bundle and writes a mapping:
-  intrusion-set (group)  --uses-->  attack-pattern (technique/sub-technique)
-
-Output:
-  <DATA_ROOT>/attack_stix/processed/ti_groups_techniques.csv
-
-Paths are repo-relative and environment-overridable via common.paths:
-  - DATA_DIR env var can redirect <DATA_ROOT> if you want data elsewhere.
-"""
-
 from __future__ import annotations
 import csv
 import json
@@ -18,14 +6,20 @@ import re
 from typing import Dict, List, Tuple
 import sys
 from pathlib import Path
+# ============================================
+# Paths / Project Imports
+# ============================================
 ROOT = Path(__file__).resolve().parents[2]  # repo root
 sys.path.insert(0, str(ROOT))
 from project_paths import (
     PROCESSED_DIR, ATTACK_STIX_DIR,TI_GROUPS_TECHS_CSV,)
+
 INDEX_JSON   = ATTACK_STIX_DIR / "index.json"
 OUT_CSV      = TI_GROUPS_TECHS_CSV
 
-
+# ============================================
+# Bundle Helpers
+# ============================================
 def _latest_local_bundle() -> pathlib.Path | None:
     candidates = list(ATTACK_STIX_DIR.glob("enterprise-attack-*.json"))
     if not candidates:
@@ -37,7 +31,6 @@ def _latest_local_bundle() -> pathlib.Path | None:
         return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
 
     return sorted(candidates, key=vernum, reverse=True)[0]
-
 
 def _find_bundle() -> pathlib.Path:
     path = _latest_local_bundle()
@@ -64,7 +57,9 @@ def _find_bundle() -> pathlib.Path:
         f"Optional index file: {INDEX_JSON}"
     )
 
-
+# ============================================
+# Row Builders
+# ============================================
 def _group_row(g: Dict) -> Tuple[str, str | None, str | None]:
     name = g.get("name")
     gid = next(
@@ -75,7 +70,6 @@ def _group_row(g: Dict) -> Tuple[str, str | None, str | None]:
     )
     return g["id"], gid, name
 
-
 def main() -> None:
     bundle_path = _find_bundle()
     print(f"[INFO] Using ATT&CK bundle: {bundle_path}")
@@ -83,16 +77,12 @@ def main() -> None:
     data = json.loads(bundle_path.read_text(encoding="utf-8"))
     objects = [o for o in data.get("objects", []) if isinstance(o, dict)]
     objs: Dict[str, Dict] = {o["id"]: o for o in objects if "id" in o}
-
-    # Intrusion sets (groups)
     groups = [
         o for o in objs.values()
         if o.get("type") == "intrusion-set"
         and not o.get("revoked")
         and not o.get("x_mitre_deprecated")
     ]
-
-    # Attack patterns (techniques & sub-techniques)
     techs = [
         o for o in objs.values()
         if o.get("type") == "attack-pattern"
@@ -100,8 +90,6 @@ def main() -> None:
         and not o.get("x_mitre_deprecated")
     ]
     tech_by_id = {t["id"]: t for t in techs}
-
-    # Map STIX attack-pattern -> MITRE technique ID (e.g., T1566.002)
     techid_by_id: Dict[str, str | None] = {
         t["id"]: next(
             (ref.get("external_id")
@@ -111,14 +99,11 @@ def main() -> None:
         )
         for t in techs
     }
-
-    # Relationships: intrusion-set --uses--> attack-pattern
     edges = [
         o for o in objs.values()
         if o.get("type") == "relationship"
         and o.get("relationship_type") == "uses"
     ]
-
     rows: List[Dict[str, object]] = []
     for r in edges:
         src, tgt = r.get("source_ref"), r.get("target_ref")
@@ -140,8 +125,6 @@ def main() -> None:
                         "is_subtechnique": is_sub,
                     }
                 )
-
-    # Write CSV
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     if not rows:
         raise RuntimeError("No intrusion-set → technique relationships found to write.")

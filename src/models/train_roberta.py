@@ -1,13 +1,3 @@
-#!/usr/bin/env python3
-"""
-train_roberta.py — zero-CLI version with baked-in config (just run: python train_roberta.py)
-
-Dataset CSV schema (required columns): id, text, labels, split
-- labels: pipe-separated, e.g. "T1566.002|APT29" (can be empty)
-- split: one of train / val / test (case-insensitive; script respects your splits)
-
-"""
-
 from __future__ import annotations
 import csv
 import json
@@ -31,31 +21,24 @@ from transformers import (
     Trainer,
     TrainingArguments,
 )
+# ============================================
+# Paths 
+# ============================================
 ROOT = Path(__file__).resolve().parents[2]  # repo root
 sys.path.insert(0, str(ROOT))
-from project_paths import (
-    PROJECT_ROOT, DATA_ROOT, EXPERIMENTS_ROOT, SRC_ROOT, MODELS_ROOT, EXPERIMENTS_ROOT,SCRIPTS_DIR,
-    RAW_DIR, PROCESSED_DIR, EXTRACTED_PDFS_DIR,
-    MAPPED_DIR, EXCEL_DIR, MITIGATIONS_DIR,
-    ATTACK_STIX_DIR,PDFS_DIR,RULES_DIR,EXTRACT_SCRIPT,ATTACK_SCRIPT,MAP_IOCS_SCRIPT,
-    BUILD_DATASET_SCRIPT,MITIGATIONS_SCRIPT,
-    GROUP_TTPS_DETAIL_CSV,MATCHING_SCRIPT,REPORT_GENERATION_SCRIPT,TECHNIQUE_LABELS_SCRIPT,
-    TRAIN_ROBERTA_SCRIPT,PREDICT_SCRIPT,BEST_MODEL_DIR,
-    MAPPING_CSV,MITIGATIONS_CSV,EXCEL_ATTACK_TECHS,
-    EXTRACTED_IOCS_CSV,TI_GROUPS_TECHS_CSV,DATASET_CSV,LABELS_TXT,GROUP_TTPS_DETAIL_CSV,RANKED_GROUPS_CSV,
-     project_path,ensure_dir_tree,add_src_to_syspath
-)
+from project_paths import (EXPERIMENTS_ROOT,MODELS_ROOT, EXPERIMENTS_ROOT, PROCESSED_DIR,BEST_MODEL_DIR,)
 
 BEST_DIR = BEST_MODEL_DIR
-# EarlyStopping is optional; present on most recent transformers
 try:
-    from transformers import EarlyStoppingCallback  # type: ignore
+    from transformers import EarlyStoppingCallback  
     HAS_EARLY_STOP = True
 except Exception:
-    EarlyStoppingCallback = None  # type: ignore
+    EarlyStoppingCallback = None 
     HAS_EARLY_STOP = False
 
-
+# ============================================
+# Output Dir Helper
+# ============================================
 def output_dir_for_folds(n_folds: int, model_slug: str = "roberta_base"):
     return EXPERIMENTS_ROOT / f"{n_folds}foldruns" / model_slug
 
@@ -70,37 +53,33 @@ class Config:
     MODEL_NAME: str = "roberta-base"  # e.g., "roberta-base", "roberta-large", "microsoft/deberta-v3-base", local path, etc.
 
     # --- Training hyperparams ---
-    EPOCHS: int = 5            # More epochs can overfit small data; try 3–10
-    LR: float = 3e-5           # Typical range: 1e-5 to 5e-5
-    MAX_LEN: int = 384         # 128/256/384; longer -> slower but might help
-    TRAIN_BATCH: int = 8       # If OOM, lower it (e.g., 4). If GPU RAM is big, try 16
-    EVAL_BATCH: int = 16       # Can be larger than train batch
-    WARMUP_RATIO: float = 0.06 # 0.0–0.1 usually fine
-    WEIGHT_DECAY: float = 0.01 # 0.0–0.1; helps regularize
+    EPOCHS: int = 5            # try 3–10
+    LR: float = 3e-5           #  range: 1e-5 to 5e-5
+    MAX_LEN: int = 384         # 128/256/384;
+    TRAIN_BATCH: int = 8  
+    EVAL_BATCH: int = 16      
+    WARMUP_RATIO: float = 0.06 
+    WEIGHT_DECAY: float = 0.01 
     FP16: bool = True          # True if you have a CUDA GPU; ignored on CPU
 
     # --- Reproducibility ---
     SEED: int = 42
 
     # --- Logging / checkpointing ---
-    SAVE_BEST: bool = True         # Track best model on validation / folds
-    SAVE_TOTAL_LIMIT: Optional[int] = 3  # None to keep all; small number to prune
-    LOGGING_STEPS: int = 50        # Console log frequency (steps)
-    EVAL_STEPS: int = 200          # If in-training eval supported; otherwise ignored
-    # when you build TrainingArguments
-    save_strategy="epoch",                 # or "steps"
-    load_best_model_at_end=True            # if you evaluate during training
+    SAVE_BEST: bool = True         
+    SAVE_TOTAL_LIMIT: Optional[int] = 3  
+    LOGGING_STEPS: int = 50        
+    EVAL_STEPS: int = 200        
+    save_strategy="epoch",                 
+    load_best_model_at_end=True           
     save_total_limit=3
-
     # --- Metrics ---
     THRESHOLD: float = 0.5         # Sigmoid threshold for multi-label prediction
-
-    # --- Cross-validation (uses your CSV's train+val pool; keeps test fixed) ---
-    USE_KFOLD: bool = True     # <- disable k-fold when using random split
+    USE_KFOLD: bool = True     # disable k-fold when using random split
     USE_RANDOM_SPLIT: bool = True
     SPLIT_RATIOS: tuple[float, float, float] = (0.8, 0.1, 0.1)
-    N_FOLDS: int = 5               # 5-fold by default
-    SHUFFLE_POOL: bool = True      # Shuffle train+val pool before folding
+    N_FOLDS: int = 5             
+    SHUFFLE_POOL: bool = True      
 
     OUTPUT_DIR = output_dir_for_folds(N_FOLDS, model_slug="roberta_base_v1")
     CSV_PATH   = PROCESSED_DIR / "dataset.csv"
@@ -136,14 +115,12 @@ def read_labels_from_csv(csv_path: Path, groups_only: bool, tech2groups: dict[st
             if not labs:
                 continue
             if groups_only:
-                # expand techniques -> groups; keep any groups already present
                 row_groups = set()
                 for x in labs.split("|"):
                     x = x.strip()
                     if not x:
                         continue
                     if x.startswith("T"):
-                        # use exact T#### or T####.### first; if nothing, also try root T####
                         if x in tech2groups:
                             row_groups |= tech2groups[x]
                         else:
@@ -159,7 +136,7 @@ def read_labels_from_csv(csv_path: Path, groups_only: bool, tech2groups: dict[st
                         uniq.add(x)
 
     if groups_only:
-        labels = sorted(uniq)  # groups only
+        labels = sorted(uniq)  
     else:
         tech = sorted([x for x in uniq if x.startswith("T")])
         grp  = sorted([x for x in uniq if not x.startswith("T")])
@@ -190,7 +167,6 @@ def load_tech_to_groups_map(csv_path: Path) -> dict[str, set[str]]:
     return m
 
 def print_run_banner(labels: List[str], cfg: Config, out_dir: Path):
-    # Console banner with folds + hyperparameters
     print(
         "[OK] Labels loaded: {:d} | Folds: {} | Model: {} | "
         "epochs={}, lr={}, max_len={}, train/eval batch={}/{} | warmup={}, weight_decay={}, fp16={}\n[OUT] {}".format(
@@ -230,12 +206,10 @@ def compute_output_dir(cfg: Config) -> Path:
         return Path(f"{cfg.N_FOLDS}foldruns/roberta")
     return cfg.OUTPUT_DIR
 
-
+# ============================================
+# Dataset
+# ============================================
 class MultiLabelCSVDataset(Dataset):
-    """
-    CSV-backed multi-label dataset.
-    - If groups_only=True, technique labels (Txxxx / Txxxx.xxx) are expanded to groups via tech2groups.
-    """
     def __init__(
         self,
         csv_path,
@@ -255,14 +229,12 @@ class MultiLabelCSVDataset(Dataset):
         self.records: List[Tuple[str, np.ndarray]] = []
 
         def expand_to_groups(labels_str: str) -> List[str]:
-            """Map technique labels to groups using tech2groups; pass group labels through."""
             labs_out: Set[str] = set()
             for l in (labels_str or "").split("|"):
                 l = (l or "").strip()
                 if not l:
                     continue
                 if l.startswith("T"):
-                    # exact technique first; fallback to root (e.g., T1059 from T1059.001)
                     if l in self.tech2groups:
                         labs_out |= self.tech2groups[l]
                     else:
@@ -271,8 +243,6 @@ class MultiLabelCSVDataset(Dataset):
                 else:
                     labs_out.add(l)
             return sorted(labs_out)
-
-        # ---- load rows and build records ----
         import csv, pathlib
         with pathlib.Path(csv_path).open("r", encoding="utf-8") as f:
             rows = list(csv.DictReader(f))
@@ -305,7 +275,7 @@ class MultiLabelCSVDataset(Dataset):
         if not self.records:
             raise ValueError("No records found for the specified selection.")
 
-        self._length = len(self.records)  # cache so __len__ is bulletproof
+        self._length = len(self.records) 
 
     def __len__(self) -> int:
         return self._length
@@ -321,7 +291,9 @@ class MultiLabelCSVDataset(Dataset):
         enc["labels"] = y
         return enc
 
-# --- Multi-label metrics ---
+# ============================================
+# Metrics
+# ============================================
 def _precision_recall_f1(y_true: np.ndarray, y_pred: np.ndarray, eps: float = 1e-9):
     # micro
     tp = ((y_true == 1) & (y_pred == 1)).sum()
@@ -367,8 +339,9 @@ def make_compute_metrics(threshold: float):
         preds = (probs >= threshold).astype(np.int32)
         return _precision_recall_f1(labels.astype(np.int32), preds)
     return compute_metrics
-
-# --- Version-agnostic TrainingArguments builder ---
+# ============================================
+# TrainingArguments
+# ============================================
 def build_training_args(cfg: Config, do_eval_in_training: bool, out_dir: Path) -> TrainingArguments:
     sig = signature(TrainingArguments.__init__)
     allowed = set(sig.parameters.keys())
@@ -384,7 +357,7 @@ def build_training_args(cfg: Config, do_eval_in_training: bool, out_dir: Path) -
         "fp16": bool(cfg.FP16 and torch.cuda.is_available()),
         "logging_steps": cfg.LOGGING_STEPS,
         "seed": cfg.SEED,
-        "report_to": [],  # disable wandb/etc
+        "report_to": [], 
         "save_total_limit": cfg.SAVE_TOTAL_LIMIT,
     }
 
@@ -396,7 +369,6 @@ def build_training_args(cfg: Config, do_eval_in_training: bool, out_dir: Path) -
         if "save_steps" in allowed:
             kw["save_steps"] = cfg.EVAL_STEPS
 
-        # Always set a metric name when we plan to evaluate in training
         if "metric_for_best_model" in allowed:
             kw["metric_for_best_model"] = "f1_micro"
         if cfg.SAVE_BEST and "load_best_model_at_end" in allowed:
@@ -404,7 +376,6 @@ def build_training_args(cfg: Config, do_eval_in_training: bool, out_dir: Path) -
             if "greater_is_better" in allowed:
                 kw["greater_is_better"] = True
     else:
-        # No in-training eval: avoid mismatched strategies
         if "save_strategy" in allowed:
             kw["save_strategy"] = "no"
 
@@ -412,12 +383,6 @@ def build_training_args(cfg: Config, do_eval_in_training: bool, out_dir: Path) -
     return TrainingArguments(**kw)
 
 def maybe_early_stopping(use_eval_in_training: bool, cfg: Config, targs: TrainingArguments):
-    """
-    Only attach EarlyStoppingCallback if:
-      - we will evaluate during training,
-      - transformers provides EarlyStoppingCallback,
-      - and a metric_for_best_model is defined on TrainingArguments.
-    """
     if not (use_eval_in_training and cfg.SAVE_BEST and HAS_EARLY_STOP):
         return None
     metric_name = getattr(targs, "metric_for_best_model", None)
@@ -425,22 +390,20 @@ def maybe_early_stopping(use_eval_in_training: bool, cfg: Config, targs: Trainin
     if not metric_name or eval_strategy == "no":
         return None
     try:
-        # Patience counts eval calls, not epochs.
         return [EarlyStoppingCallback(early_stopping_patience=cfg.EVAL_STEPS,
                                       early_stopping_threshold=0.0)]
     except Exception:
         return None
 
+# ============================================
+# Run
+# ============================================
 def main():
     cfg = CFG
     set_seed(cfg.SEED)
-
-    # --- Load CSV stats and technique->groups map (once) ---
     counts = scan_split_counts(cfg.CSV_PATH)
     tech2groups_path = PROCESSED_DIR / "ti_groups_techniques.csv"
     tech2groups = load_tech_to_groups_map(tech2groups_path)
-
-    # --- Build/Load labels (once) ---
     labels = ensure_labels_file(
         cfg.LABELS_PATH, cfg.CSV_PATH,
         groups_only=cfg.PREDICT_GROUPS_ONLY,
@@ -449,8 +412,6 @@ def main():
     if len(labels) == 0:
         print("[ERROR] Label space is empty. Either set PREDICT_GROUPS_ONLY=False or ensure ti_groups_techniques.csv maps your techniques to groups.")
         return
-
-    # --- Static artifacts for model init (shared across runs) ---
     label2id = {l: i for i, l in enumerate(labels)}
     id2label = {i: l for l, i in label2id.items()}
     tokenizer_base = AutoTokenizer.from_pretrained(cfg.MODEL_NAME, use_fast=True)
@@ -462,14 +423,10 @@ def main():
         label2id=label2id,
     )
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer_base)
-
-    # --- Where we keep a single best model for inference ---
     BEST_DIR = MODELS_ROOT / "best_roberta_for_predict"
     BEST_DIR.mkdir(parents=True, exist_ok=True)
     best_score = -1.0
     best_src_dir: Path | None = None
-
-    # --- Try k = 0..10 (skip k=1) ---
     for k in range(0, 11):
         if k == 1:
             continue
@@ -489,20 +446,16 @@ def main():
         run_dir.mkdir(parents=True, exist_ok=True)
         print_run_banner(labels, cfg, run_dir)
 
-        # Write static artifacts for this run
         (run_dir / "label2id.json").write_text(json.dumps(label2id, indent=2), encoding="utf-8")
         (run_dir / "id2label.json").write_text(json.dumps({i: l for i, l in enumerate(labels)}, indent=2), encoding="utf-8")
         (run_dir / "run_config.json").write_text(json.dumps(CFG.__dict__, indent=2, default=str), encoding="utf-8")
         write_readme(run_dir, labels, cfg)
 
         metrics_json: Dict[str, dict] = {}
-
-        # Fresh base model/tokenizer per run
         tokenizer = tokenizer_base 
         base_model = AutoModelForSequenceClassification.from_pretrained(cfg.MODEL_NAME, config=config_base)
 
         if use_random_split:
-            # ---- Random 80/10/10 split (seeded) ----
             with cfg.CSV_PATH.open("r", encoding="utf-8") as f:
                 rows = list(csv.DictReader(f))
 
@@ -577,25 +530,18 @@ def main():
             score_k = val_f1
 
         else:
-            # --- K-FOLD path with safe fallbacks ---
             with cfg.CSV_PATH.open("r", encoding="utf-8") as f:
                 rows = list(csv.DictReader(f))
-
-            # Prefer explicit splits if present
             pool_idx = [i for i, r in enumerate(rows)
                         if (r.get("split") or "").strip().lower() in ("train", "val")]
             test_idx = [i for i, r in enumerate(rows)
                         if (r.get("split") or "").strip().lower() == "test"]
-
-            # Fallback: no train/val in CSV -> use ALL rows for folds, disable test
             if len(pool_idx) == 0:
                 print(f"[WARN][k={k}] No 'train'/'val' rows in dataset.csv — using ALL rows for k-fold; test set disabled.")
                 pool_idx = list(range(len(rows)))
                 test_idx = []
 
             print(f"[INFO][k={k}] Pool size (train+val rows): {len(pool_idx)} | Test size: {len(test_idx)}")
-
-            # Not enough rows to sustain cfg.N_FOLDS? Downgrade to a random split for this k
             if len(pool_idx) < cfg.N_FOLDS or cfg.N_FOLDS < 2:
                 print(f"[WARN][k={k}] Not enough rows for {cfg.N_FOLDS} folds; falling back to a random 80/10/10 split for this run.")
                 n = len(pool_idx)
@@ -671,7 +617,6 @@ def main():
 
                 score_k = float(metrics_json.get("val", {}).get("f1_micro", -1.0))
             else:
-                # ---- standard k-fold on the pool_idx ----
                 rng = np.random.default_rng(cfg.SEED)
                 if cfg.SHUFFLE_POOL:
                     rng.shuffle(pool_idx)
@@ -721,16 +666,10 @@ def main():
                     m = _precision_recall_f1(labels_np.astype(np.int32), preds)
                     print("[OK] Fold metrics:", m)
                     fold_metrics.append(m)
-
-                # Average fold metrics
                 avg = {key: float(np.mean([fm[key] for fm in fold_metrics])) for key in fold_metrics[0].keys()}
                 metrics_json = {f"cv{cfg.N_FOLDS}_avg": avg, f"cv{cfg.N_FOLDS}_folds": fold_metrics}
-
-                # Save the last trained fold model + tokenizer
                 trainer.save_model(str(run_dir))
                 tokenizer.save_pretrained(str(run_dir))
-
-                # Optional held-out test (only if you had it)
                 if len(test_idx) > 0:
                     print("\n[INFO] Evaluating on held-out test split…")
                     test_ds = MultiLabelCSVDataset(cfg.CSV_PATH, split=None, tokenizer=tokenizer,
@@ -746,8 +685,7 @@ def main():
                 print(f"[OK] Wrote metrics.json -> {run_dir}")
                 score_k = float(metrics_json.get(f"cv{cfg.N_FOLDS}_avg", {}).get("f1_micro", -1.0))
 
-
-        # Save metrics for this run & maybe update global best
+        # Save metrics for this run and save best
         if metrics_json:
             (run_dir / "metrics.json").write_text(json.dumps(metrics_json, indent=2), encoding="utf-8")
             print(f"[OK] Wrote metrics.json -> {run_dir}")

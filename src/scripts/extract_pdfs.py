@@ -1,11 +1,3 @@
-"""
-Extract text/metadata/IOCs from PDFs.
-
-Requires:
-  pip install pymupdf
-"""
-
-import argparse
 import hashlib
 import json
 import re
@@ -13,33 +5,30 @@ import sys
 import urllib.parse
 from pathlib import Path
 from datetime import datetime
+# ============================================
+# Paths 
+# ============================================
 ROOT = Path(__file__).resolve().parents[2]  # repo root
 sys.path.insert(0, str(ROOT))
 from project_paths import (
-    PROJECT_ROOT, DATA_ROOT, EXPERIMENTS_ROOT, SRC_ROOT, MODELS_ROOT, EXPERIMENTS_ROOT,SCRIPTS_DIR,
-    RAW_DIR, PROCESSED_DIR, EXTRACTED_PDFS_DIR,
-    MAPPED_DIR, EXCEL_DIR, MITIGATIONS_DIR,
-    ATTACK_STIX_DIR,PDFS_DIR,RULES_DIR,EXTRACT_SCRIPT,ATTACK_SCRIPT,MAP_IOCS_SCRIPT,
-    BUILD_DATASET_SCRIPT,MITIGATIONS_SCRIPT,
-    GROUP_TTPS_DETAIL_CSV,MATCHING_SCRIPT,REPORT_GENERATION_SCRIPT,TECHNIQUE_LABELS_SCRIPT,
-    TRAIN_ROBERTA_SCRIPT,PREDICT_SCRIPT,BEST_MODEL_DIR,
-    MAPPING_CSV,MITIGATIONS_CSV,EXCEL_ATTACK_TECHS,
-    EXTRACTED_IOCS_CSV,TI_GROUPS_TECHS_CSV,DATASET_CSV,LABELS_TXT,GROUP_TTPS_DETAIL_CSV,RANKED_GROUPS_CSV,
-     project_path,ensure_dir_tree,add_src_to_syspath
-)
-
-
+    EXTRACTED_PDFS_DIR,PDFS_DIR,EXTRACTED_IOCS_CSV,)
+# ============================================
+# Third-party (PyMuPDF)
+# ============================================
 try:
-    import fitz  # PyMuPDF
+    import fitz  
 except ImportError:
     print("Missing dependency: PyMuPDF. Install with:\n  pip install pymupdf", file=sys.stderr)
     sys.exit(1)
 
-
+# ============================================
+# Defaults
+# ============================================
 DEFAULT_IN_DIR  = PDFS_DIR   
 DEFAULT_OUT_DIR = EXTRACTED_PDFS_DIR           
-
-
+# ============================================
+# Regex Patterns
+# ============================================
 URL_RX    = re.compile(r'\bhttps?://[^\s<>"\'\]\)}]+', re.I)  # http + https
 IPV4_RX   = re.compile(r'\b(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}\b')
 MD5_RX    = re.compile(r'\b[a-f0-9]{32}\b', re.I)
@@ -52,7 +41,9 @@ BARE_DOMAIN_RX = re.compile(
     r'\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,})\b', re.I
 )
 
-
+# ============================================
+# Domain/Token Heuristics
+# ============================================
 _BAD_TLD_LIKE_FILES = {
     "exe","dll","sys","ocx","scr","dat","bin",
     "doc","docx","hwp","pdf","xls","xlsx","ppt","pptx","rtf","txt","csv","db","cfg","xml","json","log",
@@ -76,6 +67,9 @@ _VALID_TLDS = {
     "za"
 }
 
+# ============================================
+# Utility Functions
+# ============================================
 def sha1sum(path: Path) -> str:
     h = hashlib.sha1()
     with path.open("rb") as f:
@@ -96,9 +90,9 @@ def _is_valid_hostname(host: str) -> bool:
 def _domain_from_url(u: str) -> str | None:
     try:
         parsed = urllib.parse.urlparse(u)
-        host = (parsed.netloc or "").split("@")[-1]  # drop userinfo
-        host = host.split(":")[0]                    # drop port
-        host = host.lstrip("[").rstrip("]")         # ipv6 brackets
+        host = (parsed.netloc or "").split("@")[-1]
+        host = host.split(":")[0]                    
+        host = host.lstrip("[").rstrip("]")        
         host = host.lower()
         if not _is_valid_hostname(host):
             return None
@@ -125,8 +119,9 @@ def _is_probable_domain(token: str) -> bool:
         return False
     return True
 
-
+# ============================================
 # IOC Extraction
+# ============================================
 def extract_iocs_from_text(text: str):
     out = []
 
@@ -140,7 +135,7 @@ def extract_iocs_from_text(text: str):
         if _is_probable_domain(d):
             out.append(("domain", d))
 
-    # Bare domains
+    # domains
     for m in BARE_DOMAIN_RX.finditer(text):
         d = _strip_punct(m.group(0)).lower()
         if _is_probable_domain(d):
@@ -164,10 +159,12 @@ def extract_iocs_from_text(text: str):
             deduped.append((kind, val))
     return deduped
 
-
+# ============================================
+# PDF Extraction
+# ============================================
 def extract_pdf(pdf_path: Path, out_dir: Path, per_page: bool = True, collect_iocs: bool = True):
     file_hash = sha1sum(pdf_path)
-    folder = f"{slugify(pdf_path.stem)}-{file_hash[:8]}"  # short + unique
+    folder = f"{slugify(pdf_path.stem)}-{file_hash[:8]}"  
     sample_dir = out_dir / folder
     sample_dir.mkdir(parents=True, exist_ok=True)
 
@@ -214,7 +211,9 @@ def extract_pdf(pdf_path: Path, out_dir: Path, per_page: bool = True, collect_io
 
     return {"dir": str(sample_dir), "stem": pdf_path.stem, "iocs": doc_iocs}
 
-# CSV output
+# ============================================
+# CSV Output
+# ============================================
 def write_iocs(all_iocs, out_csv: Path):
     if not all_iocs:
         return
@@ -231,24 +230,15 @@ def write_iocs(all_iocs, out_csv: Path):
             seen.add(key)
             w.writerow(r)
 
+# ============================================
+# Orchestration
+# ============================================
 def run_extract(
     in_dir: Path = DEFAULT_IN_DIR,
     out_dir: Path = DEFAULT_OUT_DIR,
     per_page: bool = True,
     collect_iocs: bool = True,
 ) -> tuple[Path, Path | None]:
-    """
-
-
-    Inputs:
-      in_dir (Path): folder containing *.pdf
-      out_dir (Path): base folder for extracted outputs
-      per_page (bool): write pNNN.txt files if True
-      collect_iocs (bool): extract and write IOCs if True
-
-    Returns:
-      (Path to out_dir, Path to EXTRACTED_IOCS_CSV or None if not written)
-    """
     out_dir.mkdir(parents=True, exist_ok=True)
 
     pdfs = sorted(in_dir.glob("*.pdf"))

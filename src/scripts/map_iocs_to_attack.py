@@ -1,24 +1,11 @@
 import csv
 import json
-import re
 from collections import defaultdict, Counter
-
-#Inputs:
-# Data/extracted_pdfs/extracted_iocs.csv
-#  columns: file,page,kind,value
-#  kind includes: url, domain, ipv4, md5, sha1, sha256, email, attack_id
-
-# Data/attack_stix/processed/ti_groups_techniques.csv
-#  columns: group_sid,group_id,group_name,technique_id,technique_name,is_subtechnique
-
-#Data/attack_stix/enterprise-attack/enterprise-attack-*.json (optional, to fetch tactics)
-
-#Outputs:
-# Data/mapped/ranked_groups.csv
-# Data/mapped/group_ttps_detail.csv
-# (optional) Data/mapped/<file>-bundle.json (mini STIX bundle)
 import sys
 from pathlib import Path
+# ============================================
+# Paths
+# ============================================
 ROOT = Path(__file__).resolve().parents[2]  # repo root
 sys.path.insert(0, str(ROOT))
 from project_paths import (
@@ -32,7 +19,9 @@ PROCESSESDIR = PROCESSED_DIR
 
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-
+# ============================================
+# CSV I/O Helpers
+# ============================================
 def read_csv(path: Path):
     with path.open("r", encoding="utf-8", newline="") as f:
         r = csv.DictReader(f)
@@ -43,10 +32,14 @@ def write_csv(path: Path, rows, headers):
         w = csv.DictWriter(f, fieldnames=headers)
         w.writeheader()
         w.writerows(rows)
-
+# ============================================
+# Normalization Utilities
+# ============================================
 def technique_root(tid: str) -> str:
     return tid.split(".", 1)[0]
-
+# ============================================
+# ATT&CK Bundle Parsing
+# ============================================
 def load_attack_tactics():
     bundle = None
     for p in sorted(ATTACK_DIR.glob("enterprise-attack-*.json"), reverse=True):
@@ -60,14 +53,12 @@ def load_attack_tactics():
         return {}
 
     data = json.loads(bundle.read_text(encoding="utf-8"))
-    # map technique external_id to set(tactics)
     t2tactic = defaultdict(set)
     for o in data.get("objects", []):
         if not isinstance(o, dict): 
             continue
         if o.get("type") != "attack-pattern": 
             continue
-        # external ATT&CK ID
         ext_id = None
         for ref in o.get("external_references", []) or []:
             if ref.get("source_name") == "mitre-attack":
@@ -80,14 +71,10 @@ def load_attack_tactics():
             if ph.get("kill_chain_name") == "mitre-attack":
                 t2tactic[ext_id].add(ph.get("phase_name"))
     return {k: ", ".join(sorted(v)) for k, v in t2tactic.items()}
-
+# ============================================
+# Group Scoring
+# ============================================
 def score_groups(observed_tids, group_edges):
-    """
-      - direct match on technique_id (exact ID, including sub-techniques)
-      - if no exact matches, also consider root technique matches (T1059 == T1059.001)
-      - score = #exact*2 + #root_only*1
-    Returns dict: group_name -> (score, counters, matched_exact, matched_root)
-    """
     by_group = defaultdict(lambda: {
         "score": 0,
         "exact": Counter(),   
@@ -121,7 +108,9 @@ def score_groups(observed_tids, group_edges):
 
     out = {g: v for g, v in by_group.items() if v["score"] > 0}
     return out
-
+# ============================================
+# STIX Mini-Bundle Builder
+# ============================================
 def build_mini_stix_bundle(file_id, iocs, matched_attack_ids):
     import uuid, datetime as dt
     now = dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -175,7 +164,9 @@ def build_mini_stix_bundle(file_id, iocs, matched_attack_ids):
         })
 
     return {"type": "bundle", "id": sid("bundle"), "objects": objs}
-
+# ============================================
+# Run
+# ============================================
 def main():
     if not IOC_CSV.exists():
         print(f"Missing {IOC_CSV}")
@@ -192,7 +183,7 @@ def main():
     by_file_iocs = defaultdict(list)
 
     for row in iocs:
-        file_id = row["file"]     #shorten file name
+        file_id = row["file"] 
         kind = row["kind"].lower()
         val  = row["value"]
         if kind == "attack_id":
@@ -237,8 +228,6 @@ def main():
                 "matched_exact": matched_exact_tactics,
                 "matched_root_only": matched_root_tactics
             })
-
-        # top-N ranking rows 
         for rank, g in enumerate(scored_list[:10], start=1):
             ranked_rows.append({
                 "file": file_id,
@@ -252,8 +241,6 @@ def main():
 
         bundle = build_mini_stix_bundle(file_id, by_file_iocs[file_id], tids)
         (OUT_DIR / f"{file_id}-bundle.json").write_text(json.dumps(bundle, indent=2), encoding="utf-8")
-
-    # write CSVs
     if ranked_rows:
         write_csv(PROCESSESDIR / "ranked_groups.csv",
                   ranked_rows,

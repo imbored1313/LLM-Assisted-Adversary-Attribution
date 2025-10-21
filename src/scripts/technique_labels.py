@@ -11,7 +11,7 @@ from project_paths import (
 
 def extract_techniques(excel_path: Path, output_csv: Path):
     df = pd.read_excel(excel_path, sheet_name="techniques", engine="openpyxl")
-    df = df.iloc[:, [0, 2]]  # Column A (ID), Column C (name)
+    df = df.iloc[:, [0, 2]]  
     df.columns = ["id", "name"]
 
     pattern = re.compile(r"^T\d{4}(?:\.\d{3})?$", re.IGNORECASE)

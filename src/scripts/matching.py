@@ -1,11 +1,13 @@
 from __future__ import annotations
-import csv
 import logging
 from pathlib import Path
 import re
 import sys
 from typing import Iterable, Set, Tuple
 import pandas as pd
+# ============================================
+# Paths
+# ============================================
 ROOT = Path(__file__).resolve().parents[2]  # repo root
 sys.path.insert(0, str(ROOT))
 from project_paths import (
@@ -40,11 +42,6 @@ def validate_ttps(ttps: Iterable[str]) -> Tuple[str, ...]:
 # Dataset handling — now merges both CSVs
 # ============================================
 def load_combined_dataset(MAPPED_DIR: Path) -> pd.DataFrame:
-    """
-    Load and merge both 'group_ttps_detail.csv' and 'ranked_groups.csv'
-    if they exist. This ensures that main and sub-techniques like
-    T1110 / T1110.002 are both represented.
-    """
     group_path = GROUP_TTPS_DETAIL_CSV
     ranked_path = RANKED_GROUPS_CSV
 
@@ -98,9 +95,6 @@ def with_roots(tts: Iterable[str]) -> Set[str]:
 
     for t in tts:
         out.add(t)
-        # Add root only if:
-        # - it’s not already in the input list, AND
-        # - this TTP is a sub-technique (has a dot)
         root = t.split(".", 1)[0]
         if "." in t and root not in input_roots:
             out.add(root)
@@ -111,19 +105,11 @@ def with_roots(tts: Iterable[str]) -> Set[str]:
 # Matching logic
 # ============================================
 def match_ttps(ttps: Tuple[str, ...], MAPPED_DIR: Path) -> pd.DataFrame:
-    """
-    Strictly match input TTPs against dataset but still expose full root-expanded
-    sets internally for later mitigation use.
-    """
     df = load_combined_dataset(MAPPED_DIR)
-
-    # Extract all tokens
     df["_ttp_exact"] = df.apply(
         lambda r: split_tokens(r.get("matched_exact", "")) | split_tokens(r.get("matched_root_only", "")),
         axis=1
     )
-
-    # Also keep root-expanded version for mitigations later
     def _expand_with_roots(s: Set[str]) -> Set[str]:
         out = set(s)
         for t in list(s):
@@ -132,14 +118,9 @@ def match_ttps(ttps: Tuple[str, ...], MAPPED_DIR: Path) -> pd.DataFrame:
         return out
 
     df["_ttp_with_roots"] = df["_ttp_exact"].map(_expand_with_roots)
-
-    # Strict match (for overlap)
     input_set = set(ttps)
     mask = df["_ttp_exact"].apply(lambda s: bool(input_set & s))
-
     matched = df.loc[mask].copy()
-
-    # Never drop key columns
     keep_cols = ["group_name", "group_id", "matched_exact", "matched_root_only"]
     others = [c for c in df.columns if c not in keep_cols]
     matched = matched[keep_cols + others]

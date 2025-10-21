@@ -14,7 +14,7 @@
               <div id="dropdown-display" class="dropdown-display">Click to select TTPs...</div>
 
               <div id="dropdown-options" class="dropdown-options">
-                <!-- 🔍 Search box -->
+                <!-- Search box -->
                 <input
                   type="text"
                   id="dropdown-search"
@@ -177,7 +177,7 @@
     e.stopPropagation(); // Keep dropdown open while selecting
   });
 
-  // 🔍 Dynamic filtering: hide non-matches & empty groups
+  // Dynamic filtering: hide non-matches & empty groups
   searchInput.addEventListener('input', (e) => {
     const query = e.target.value.toLowerCase().trim();
 

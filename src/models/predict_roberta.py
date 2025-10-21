@@ -6,18 +6,25 @@ from typing import List, Dict, Tuple, Iterable
 import sys
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
-
+# ============================================
+# Paths 
+# ============================================
 ROOT = Path(__file__).resolve().parents[2]  # repo root
 sys.path.insert(0, str(ROOT))
 from project_paths import (
     PROCESSED_DIR, BEST_MODEL_DIR,EXTRACTED_IOCS_CSV,
 )
 
+# ============================================
+# Defaults & Regex
+# ============================================
 DEFAULT_MODEL_DIR = BEST_MODEL_DIR
 DEFAULT_THRESHOLD = 0.5
-
 ATTACK_ID_RX = re.compile(r"^T\d{4}(?:\.\d{1,3})?$", re.I)
 
+# ============================================
+# Text Assembly Helpers
+# ============================================
 def join_some(vals: List[str], n: int = 10) -> str:
     vals = [str(x).strip() for x in vals if str(x).strip()]
     return " ".join(vals[:n])
@@ -45,6 +52,9 @@ def build_text(
     if free_text:  parts.append(f"Notes: {free_text.strip()}")
     return " | ".join(parts)
 
+# ============================================
+# Index & Label Loading
+# ============================================
 def load_labels_from_dir(run_dir: Path) -> list[str]:
     id2label_path = run_dir / "id2label.json"
     if not id2label_path.exists():
@@ -61,6 +71,9 @@ def load_attack_index() -> List[dict]:
             rows.append(r)
     return rows
 
+# ============================================
+# Prediction
+# ============================================
 def predict(
     text: str,
     threshold: float = DEFAULT_THRESHOLD,
@@ -82,10 +95,7 @@ def predict(
     with torch.no_grad():
         logits = model(**enc).logits
         probs = torch.sigmoid(logits).cpu().numpy()[0]  # multi-label
-
-    # gather predictions
     indexed = list(enumerate(probs))
-    # filter by threshold first
     above = [(labels[i], float(p)) for i, p in indexed if p >= threshold]
     # if nothing above threshold, show best top_k anyway
     if not above:
@@ -93,28 +103,20 @@ def predict(
         if top_k is not None:
             best = best[:top_k]
         above = [(labels[i], float(p)) for i, p in best]
-
-    # sort descending by score
     above.sort(key=lambda x: x[1], reverse=True)
     if top_k is not None:
         above = above[:top_k]
     return above
 
+# ============================================
+# Expansion & Aggregation
+# ============================================
 def expand_to_attack_rows(
     predicted: Iterable[Tuple[str, float]],
     attack_rows: List[dict],
     attack_ids_in_input: set[str] | None = None,
     origin_doc: str | None = None,
 ) -> List[dict]:
-    """
-    For each predicted label:
-      - If label is a technique (T####(.###)), emit mappings for that technique.
-        origin includes 'model_pred' and also 'attack_input' if that technique
-        was present in the user's ATT&CK inputs.
-      - If label is a group name, emit that group's techniques.
-        origin is 'group_pred'.
-    Also carries 'doc_source' (provenance of the input doc/PDF) on each row.
-    """
     attack_ids_in_input = attack_ids_in_input or set()
 
     by_tid: Dict[str, List[dict]] = {}
@@ -125,8 +127,7 @@ def expand_to_attack_rows(
 
     out: List[dict] = []
     for label, score in predicted:
-        if ATTACK_ID_RX.match(label or ""):  # technique predicted
-            # provenance of output
+        if ATTACK_ID_RX.match(label or ""):  
             src_bits = ["model_pred"]
             if label.upper() in attack_ids_in_input:
                 src_bits.append("attack_input")
@@ -141,7 +142,7 @@ def expand_to_attack_rows(
                     "origin": origin,
                     "doc_source": origin_doc or "",
                 })
-        else:  # group predicted
+        else: 
             origin = "group_pred"
             for r in by_group.get(label, []):
                 out.append({
@@ -153,8 +154,6 @@ def expand_to_attack_rows(
                     "origin": origin,
                     "doc_source": origin_doc or "",
                 })
-
-    # de-dup by (group, technique), keep best score
     dedup: Dict[Tuple[str, str, str], dict] = {}
     for r in out:
         k = (r["group_id"], r["group_name"], r["technique_id"])
@@ -163,13 +162,6 @@ def expand_to_attack_rows(
     return list(dedup.values())
 
 def aggregate_by_group(rows: List[dict]) -> List[dict]:
-    """
-    Collapse to one row per group.
-    - technique_id_list / technique_name_list
-    - group_score: max(score)
-    - origin: joined unique output provenance tags (attack_input, model_pred, group_pred)
-    - doc_source: input document provenance (from resolve_sources... or --id)
-    """
     agg: Dict[Tuple[str, str], dict] = {}
     for r in rows:
         gkey = (r["group_id"], r["group_name"])
@@ -188,7 +180,6 @@ def aggregate_by_group(rows: List[dict]) -> List[dict]:
         agg[gkey]["group_score"] = max(agg[gkey]["group_score"], float(r["score"]))
         if r.get("origin"):
             agg[gkey]["origin_set"].add(r["origin"])
-        # keep first non-empty doc_source
         if not agg[gkey]["doc_source"] and r.get("doc_source"):
             agg[gkey]["doc_source"] = r["doc_source"]
 
@@ -230,7 +221,9 @@ def print_group_table(groups: List[dict]) -> None:
     for g in groups:
         print(f"- {g['group_name']}: {g.get('technique_name_list','')}")
 
-
+# ============================================
+# map inputs → extracted PDF folders
+# ============================================
 def resolve_sources_from_inputs(
     urls: List[str], domains: List[str], ips: List[str], md5s: List[str], sha256s: List[str], attacks: List[str]
 ) -> List[str]:
@@ -268,6 +261,9 @@ def resolve_sources_from_inputs(
     # return a sorted, stable list of the matching extracted PDF folders
     return sorted(hits)
 
+# ============================================
+# Run
+# ============================================
 def main():
     p = argparse.ArgumentParser(description="Predict and expand to ATT&CK rows.")
     p.add_argument("--id", default="adhoc")
@@ -292,14 +288,9 @@ def main():
         attack_ids=args.attack
     )
 
-    # Infer document provenance (PDF folders or fallback to id)
     sources = resolve_sources_from_inputs(args.url, args.domain, args.ip, args.md5, args.sha256, args.attack)
     doc_src = ", ".join(sources) if sources else args.id
-
-    # Run model
     preds = predict(text=text, threshold=args.threshold, top_k=args.top_k)
-
-    # Expand + aggregate (now with output origin + doc_source)
     attack_rows = load_attack_index()
     attack_ids_from_input = {a.strip().upper() for a in args.attack if ATTACK_ID_RX.match(a or "")}
     flat_rows = expand_to_attack_rows(preds, attack_rows, attack_ids_in_input=attack_ids_from_input, origin_doc=doc_src)
