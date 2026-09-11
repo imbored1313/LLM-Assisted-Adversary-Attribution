@@ -98,8 +98,8 @@ To install them, follow the setup steps in the Installation section.
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/ProxyLeech/ICT3214-Sec-Analytics
-cd ICT3214-Sec-Analytics
+git clone https://github.com/imbored1313/LLM-Assisted-Adversary-Attribution
+cd LLM Assisted Adversary Attribution
 
 # 2. Create a virtual environment
 # On macOS / Linux:
